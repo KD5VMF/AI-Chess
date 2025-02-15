@@ -54,7 +54,7 @@ INPUT_SIZE = STATE_SIZE + MOVE_SIZE  # Total input size
 
 HIDDEN_SIZE = 1024       # Number of neurons per hidden layer; adjust between 256-1024
 MAX_SEARCH_DEPTH = 6     # Maximum depth for minimax search; typical values: 3-6
-MOVE_TIME_LIMIT = 20.0   # Maximum seconds allowed for AI move computation
+MOVE_TIME_LIMIT = 15.0   # Maximum seconds allowed for AI move computation
 
 EPS_START = 1.0          # Starting epsilon for epsilon-greedy policy (full exploration)
 EPS_END = 0.05           # Minimum epsilon; ensures some exploration persists
@@ -72,7 +72,7 @@ TABLE_SAVE_PATH_WHITE = "white_transposition.pkl"
 TABLE_SAVE_PATH_BLACK = "black_transposition.pkl"
 
 LEARNING_RATE = 1e-3     # Learning rate for the optimizer
-BATCH_SIZE = 128         # Batch size for training
+BATCH_SIZE = 256         # Batch size for training
 EPOCHS_PER_GAME = 3      # Number of epochs to train on game memory after each game
 
 STATS_FILE = "stats.pkl" # File to store global game statistics
@@ -398,7 +398,7 @@ class SelfPlayGUI:
         self.fig.canvas.mpl_connect('key_press_event', self.on_key_press)
         self.fig.canvas.manager.set_window_title("AI vs AI (Self-Play)")
         self.draw_board()
-        self.ani = animation.FuncAnimation(self.fig, self.update, interval=1000, blit=False)
+        self.ani = animation.FuncAnimation(self.fig, self.update, interval=1000, blit=False, cache_frame_data=False)
         plt.show()
     def reset_callback(self, event):
         self.board = chess.Board()

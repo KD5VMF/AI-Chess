@@ -25,6 +25,45 @@ piece_unicode = {
 piece_unicode_gui = piece_unicode.copy()
 
 # ---------------------------
+# Global Famous Moves Database
+# ---------------------------
+FAMOUS_MOVES = {
+    "Qf6": 100,
+    "Bd6": 120,
+    "Rxd4": 110,
+    "Nf4": 90,
+    "Qg2": 130,
+    "Qh5": 70,
+    "Bxh6": 110,
+    "Rxf7": 140,
+    "Bxf7+": 150,
+    "Nxd5": 80,
+    "Qd8+": 100,
+    "Bc4": 75,
+    "Qe6": 90,
+    "Rf8#": 1000,
+    "Bf7#": 1000,
+    "Rxf8#": 1000,
+    "Nf6+": 95,
+    "Qd6": 80,
+    "Bxe6": 100,
+    "Qe7": 85,
+    "Rd8": 80,
+    "Qg4": 90,
+    "Qh6": 95,
+    "Rc8": 70,
+    "Qd4": 85,
+    "Rd6": 90,
+    "Bf5": 95,
+    "Rxd5": 100,
+    "Nxe5": 110
+}
+# (Extend FAMOUS_MOVES as desired.)
+
+# Global flag to enable MCTS.
+USE_MCTS = True
+
+# ---------------------------
 # GPU Selection
 # ---------------------------
 num_devices = torch.cuda.device_count()
@@ -48,37 +87,35 @@ print(f"Using device: {device}")
 # ---------------------------
 # Hyperparameters and File Paths
 # ---------------------------
-STATE_SIZE = 768         # 12 channels x 8x8 (board representation)
-MOVE_SIZE = 128          # from-square (64) + to-square (64) one-hot encoded
-INPUT_SIZE = STATE_SIZE + MOVE_SIZE  # Total input size
+STATE_SIZE = 768         # 12 channels * 8x8 board = 768
+MOVE_SIZE = 128          # 64 (from) + 64 (to)
+INPUT_SIZE = STATE_SIZE + MOVE_SIZE
 
-HIDDEN_SIZE = 1024       # Number of neurons per hidden layer; adjust between 256-1024
-MAX_SEARCH_DEPTH = 6     # Maximum depth for minimax search; typical values: 3-6
-MOVE_TIME_LIMIT = 15.0   # Maximum seconds allowed for AI move computation
+HIDDEN_SIZE = 512        # Number of neurons in hidden layers
+MAX_SEARCH_DEPTH = 4     # Maximum search depth for minimax/MCTS
+MOVE_TIME_LIMIT = 10.0   # Maximum seconds allowed for move computation
+EPS_START = 1.0          # Initial exploration rate (random moves)
+EPS_END = 0.05           # Minimum exploration rate
+EPS_DECAY = 0.9999       # Decay per move
 
-EPS_START = 1.0          # Starting epsilon for epsilon-greedy policy (full exploration)
-EPS_END = 0.05           # Minimum epsilon; ensures some exploration persists
-EPS_DECAY = 0.9999       # Epsilon decay rate per move
+INITIAL_CLOCK = 300.0    # Informational clock (seconds)
 
-INITIAL_CLOCK = 300.0    # Informational clock in seconds (5 minutes)
+MODEL_SAVE_FREQ = 50     # Save model every X global moves
+TABLE_SAVE_FREQ = 50     # Save transposition table every X global moves
 
-MODEL_SAVE_FREQ = 50     # Frequency (global moves) to save the model weights
-TABLE_SAVE_FREQ = 50     # Frequency (global moves) to save the transposition table
-
-# File paths for saving models and transposition tables
 MODEL_SAVE_PATH_WHITE = "white_dqn.pt"
 MODEL_SAVE_PATH_BLACK = "black_dqn.pt"
 TABLE_SAVE_PATH_WHITE = "white_transposition.pkl"
 TABLE_SAVE_PATH_BLACK = "black_transposition.pkl"
 
 LEARNING_RATE = 1e-3     # Learning rate for the optimizer
-BATCH_SIZE = 256         # Batch size for training
-EPOCHS_PER_GAME = 3      # Number of epochs to train on game memory after each game
+BATCH_SIZE = 32          # Batch size for training
+EPOCHS_PER_GAME = 3      # Number of training epochs per game
 
-STATS_FILE = "stats.pkl" # File to store global game statistics
+STATS_FILE = "stats.pkl" # File to store global statistics
 
 # ------------------------------------------------
-# Stats Manager
+# StatsManager Class (with self-check)
 # ------------------------------------------------
 class StatsManager:
     def __init__(self, filename=STATS_FILE):
@@ -87,13 +124,22 @@ class StatsManager:
 
     def load_stats(self):
         if os.path.exists(self.filename):
-            with open(self.filename, "rb") as f:
-                data = pickle.load(f)
-            self.wins_white = data.get("wins_white", 0)
-            self.wins_black = data.get("wins_black", 0)
-            self.draws = data.get("draws", 0)
-            self.total_games = data.get("total_games", 0)
-            self.global_move_count = data.get("global_move_count", 0)
+            try:
+                with open(self.filename, "rb") as f:
+                    data = pickle.load(f)
+                self.wins_white = data.get("wins_white", 0)
+                self.wins_black = data.get("wins_black", 0)
+                self.draws = data.get("draws", 0)
+                self.total_games = data.get("total_games", 0)
+                self.global_move_count = data.get("global_move_count", 0)
+                print("Stats loaded successfully.")
+            except Exception as e:
+                print(f"Error loading stats: {e}. Initializing new stats.")
+                self.wins_white = 0
+                self.wins_black = 0
+                self.draws = 0
+                self.total_games = 0
+                self.global_move_count = 0
         else:
             self.wins_white = 0
             self.wins_black = 0
@@ -109,8 +155,12 @@ class StatsManager:
             "total_games": self.total_games,
             "global_move_count": self.global_move_count
         }
-        with open(self.filename, "wb") as f:
-            pickle.dump(data, f)
+        try:
+            with open(self.filename, "wb") as f:
+                pickle.dump(data, f)
+            print("Stats saved successfully.")
+        except Exception as e:
+            print(f"Error saving stats: {e}")
 
     def record_result(self, result_str):
         self.total_games += 1
@@ -129,7 +179,7 @@ class StatsManager:
 stats_manager = StatsManager()
 
 # ------------------------------------------------
-# Neural Network
+# Neural Network (ChessDQN) Class
 # ------------------------------------------------
 class ChessDQN(nn.Module):
     def __init__(self, input_size, hidden_size):
@@ -145,7 +195,7 @@ class ChessDQN(nn.Module):
         return self.net(x)
 
 # ------------------------------------------------
-# Board & Move Encoding
+# Board and Move Encoding Functions
 # ------------------------------------------------
 def board_to_tensor(board):
     piece_to_channel = {
@@ -170,60 +220,51 @@ def move_to_tensor(move):
     return v
 
 # ------------------------------------------------
-# Minimax with Iterative Deepening & Time Cutoff
+# MCTS Node and Search Functions
 # ------------------------------------------------
-def minimax_with_time(board, depth, alpha, beta, maximizing, agent_white, agent_black, end_time):
-    if time.time() > end_time:
-        val = agent_white.evaluate_board(board) if board.turn == chess.WHITE else agent_black.evaluate_board(board)
-        return (val, None)
-    if depth == 0 or board.is_game_over():
-        if board.is_game_over():
-            res = board.result()
-            if res == "1-0":
-                return (1000, None)
-            elif res == "0-1":
-                return (-1000, None)
-            else:
-                return (0, None)
-        else:
-            val = agent_white.evaluate_board(board) if board.turn == chess.WHITE else agent_black.evaluate_board(board)
-            return (val, None)
-    moves = list(board.legal_moves)
-    if not moves:
-        return (0, None)
-    if maximizing:
-        best_eval = -math.inf
-        best_move = None
-        for move in moves:
-            board.push(move)
-            ev, _ = minimax_with_time(board, depth-1, alpha, beta, False,
-                                      agent_white, agent_black, end_time)
-            board.pop()
-            if ev > best_eval:
-                best_eval = ev
-                best_move = move
-            alpha = max(alpha, ev)
-            if beta <= alpha or time.time() > end_time:
-                break
-        return (best_eval, best_move)
-    else:
-        best_eval = math.inf
-        best_move = None
-        for move in moves:
-            board.push(move)
-            ev, _ = minimax_with_time(board, depth-1, alpha, beta, True,
-                                      agent_white, agent_black, end_time)
-            board.pop()
-            if ev < best_eval:
-                best_eval = ev
-                best_move = move
-            beta = min(beta, ev)
-            if beta <= alpha or time.time() > end_time:
-                break
-        return (best_eval, best_move)
+class MCTSNode:
+    def __init__(self, board, parent=None, move=None):
+        self.board = board
+        self.parent = parent
+        self.move = move  # Move that led to this node
+        self.children = {}  # move -> MCTSNode
+        self.visits = 0
+        self.total_value = 0.0
+
+    def is_leaf(self):
+        return len(self.children) == 0
+
+    def best_child(self, c_param=1.4):
+        return max(self.children.values(), key=lambda node: (node.total_value / node.visits) + c_param * math.sqrt(math.log(self.visits) / node.visits))
+
+def mcts_search(root_board, neural_agent, num_simulations=100):
+    root = MCTSNode(root_board.copy())
+    for _ in range(num_simulations):
+        node = root
+        # Selection
+        while not node.is_leaf() and not node.board.is_game_over():
+            node = node.best_child()
+        # Expansion
+        if not node.board.is_game_over():
+            for move in node.board.legal_moves:
+                if move not in node.children:
+                    new_board = node.board.copy()
+                    new_board.push(move)
+                    node.children[move] = MCTSNode(new_board, parent=node, move=move)
+            if node.children:
+                node = random.choice(list(node.children.values()))
+        # Simulation / Evaluation
+        value = neural_agent.evaluate_board(node.board)
+        # Backpropagation
+        while node is not None:
+            node.visits += 1
+            node.total_value += value
+            node = node.parent
+    best_move = max(root.children.items(), key=lambda item: item[1].visits)[0]
+    return best_move
 
 # ------------------------------------------------
-# ChessAgent (for Self-Play and Training)
+# ChessAgent Class (with Famous Moves & Optional MCTS)
 # ------------------------------------------------
 class ChessAgent:
     def __init__(self, name, model_path, table_path):
@@ -239,12 +280,19 @@ class ChessAgent:
         self.transposition_table = {}
         self.game_memory = []
         if os.path.exists(self.model_path):
-            self.policy_net.load_state_dict(torch.load(self.model_path, map_location=device, weights_only=True))
-            print(f"{self.name}: Loaded model from {self.model_path}")
+            try:
+                self.policy_net.load_state_dict(torch.load(self.model_path, map_location=device, weights_only=True))
+                print(f"{self.name}: Loaded model from {self.model_path}")
+            except Exception as e:
+                print(f"Error loading model from {self.model_path}: {e}. Initializing new model.")
         if os.path.exists(self.table_path):
-            with open(self.table_path, "rb") as f:
-                self.transposition_table = pickle.load(f)
-            print(f"{self.name}: Loaded transposition table with {len(self.transposition_table)} entries.")
+            try:
+                with open(self.table_path, "rb") as f:
+                    self.transposition_table = pickle.load(f)
+                print(f"{self.name}: Loaded transposition table with {len(self.transposition_table)} entries.")
+            except Exception as e:
+                print(f"Error loading transposition table from {self.table_path}: {e}. Initializing empty table.")
+                self.transposition_table = {}
     def save_model(self):
         torch.save(self.policy_net.state_dict(), self.model_path)
         print(f"{self.name}: Model saved to {self.model_path}")
@@ -264,6 +312,14 @@ class ChessAgent:
             val = self.policy_net(inp_t).item()
         self.transposition_table[fen] = val
         return val
+    def evaluate_candidate_move(self, board, move):
+        move_san = board.san(move)
+        move_san_clean = move_san.replace("!", "").replace("?", "")
+        bonus = FAMOUS_MOVES.get(move_san_clean, 0)
+        board.push(move)
+        score = self.evaluate_board(board)
+        board.pop()
+        return score + bonus
     def select_move(self, board, opponent_agent):
         is_white_turn = board.turn == chess.WHITE
         if (self.name == "white" and is_white_turn) or (self.name == "black" and not is_white_turn):
@@ -278,7 +334,17 @@ class ChessAgent:
         if random.random() < self.epsilon:
             return random.choice(moves)
         else:
-            return self.iterative_deepening(board, opponent_agent)
+            if USE_MCTS:
+                return mcts_search(board, self, num_simulations=100)
+            else:
+                best_move = None
+                best_score = -math.inf
+                for move in moves:
+                    score = self.evaluate_candidate_move(board, move)
+                    if score > best_score:
+                        best_score = score
+                        best_move = move
+                return best_move
     def iterative_deepening(self, board, opponent_agent):
         end_time = time.time() + MOVE_TIME_LIMIT
         best_move = None
@@ -321,7 +387,7 @@ class ChessAgent:
         self.game_memory = []
 
 # ------------------------------------------------
-# Self-Play Training (Faster) Mode
+# Self-Play Training (Faster) Mode (No Visual)
 # ------------------------------------------------
 def self_play_training_faster():
     agent_white = ChessAgent("white", MODEL_SAVE_PATH_WHITE, TABLE_SAVE_PATH_WHITE)
@@ -373,7 +439,7 @@ def self_play_training_faster():
             break
 
 # ------------------------------------------------
-# Self-Play Training (Slower) with Visual Mode
+# Self-Play Training (Slower) with Visual Mode (AI vs AI)
 # ------------------------------------------------
 class SelfPlayGUI:
     def __init__(self):
@@ -494,8 +560,105 @@ class SelfPlayGUI:
         self.fig.canvas.draw_idle()
 
 # ------------------------------------------------
-# Human vs AI GUI (with Control Buttons, CTRL+Q, and Detailed Stats)
+# Human vs AI GUI (with Control Buttons, CTRL+Q, Detailed Stats)
 # ------------------------------------------------
+class GUIChessAgent:
+    def __init__(self, ai_is_white):
+        self.ai_is_white = ai_is_white
+        self.model_path = MODEL_SAVE_PATH_WHITE if ai_is_white else MODEL_SAVE_PATH_BLACK
+        self.table_path = TABLE_SAVE_PATH_WHITE if ai_is_white else TABLE_SAVE_PATH_BLACK
+        self.policy_net = ChessDQN(INPUT_SIZE, HIDDEN_SIZE).to(device)
+        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=LEARNING_RATE)
+        self.criterion = nn.MSELoss()
+        self.epsilon = 0.1
+        self.transposition_table = {}
+        self.game_memory = []
+        if os.path.exists(self.model_path):
+            try:
+                self.policy_net.load_state_dict(torch.load(self.model_path, map_location=device, weights_only=True))
+                print(f"Human-vs-AI: Loaded AI model from {self.model_path}")
+            except Exception as e:
+                print(f"Error loading AI model from {self.model_path}: {e}. Initializing new model.")
+        if os.path.exists(self.table_path):
+            try:
+                with open(self.table_path, "rb") as f:
+                    self.transposition_table = pickle.load(f)
+                print(f"Human-vs-AI: Loaded transposition from {self.table_path}")
+            except Exception as e:
+                print(f"Error loading transposition table from {self.table_path}: {e}. Using empty table.")
+                self.transposition_table = {}
+    def save_model(self):
+        torch.save(self.policy_net.state_dict(), self.model_path)
+        print(f"AI model saved to {self.model_path}")
+    def save_table(self):
+        with open(self.table_path, "wb") as f:
+            pickle.dump(self.transposition_table, f)
+        print(f"AI table saved to {self.table_path}")
+    def evaluate_board(self, board):
+        fen = board.fen()
+        if fen in self.transposition_table:
+            return self.transposition_table[fen]
+        st = board_to_tensor(board)
+        dm = np.zeros(MOVE_SIZE, dtype=np.float32)
+        inp = np.concatenate([st, dm])
+        inp_t = torch.tensor(inp, dtype=torch.float32, device=device).unsqueeze(0)
+        with torch.no_grad():
+            val = self.policy_net(inp_t).item()
+        self.transposition_table[fen] = val
+        return val
+    def select_move(self, board):
+        if board.turn == self.ai_is_white:
+            s = board_to_tensor(board)
+            d = np.zeros(MOVE_SIZE, dtype=np.float32)
+            self.game_memory.append(np.concatenate([s, d]))
+        moves = list(board.legal_moves)
+        if not moves:
+            return None
+        if random.random() < self.epsilon:
+            return random.choice(moves)
+        else:
+            return self.iterative_deepening(board)
+    def iterative_deepening(self, board):
+        end_time = time.time() + MOVE_TIME_LIMIT
+        best_move = None
+        depth = 1
+        while depth <= MAX_SEARCH_DEPTH and time.time() < end_time:
+            val, mv = minimax_with_time(
+                board,
+                depth,
+                -math.inf,
+                math.inf,
+                board.turn == chess.WHITE,
+                agent_white=self,
+                agent_black=self,
+                end_time=end_time
+            )
+            if mv is not None:
+                best_move = mv
+            depth += 1
+        return best_move
+    def train_after_game(self, result):
+        if not self.game_memory:
+            return
+        s_np = np.array(self.game_memory, dtype=np.float32)
+        l_np = np.array([result] * len(self.game_memory), dtype=np.float32).reshape(-1, 1)
+        s_t = torch.tensor(s_np, device=device)
+        l_t = torch.tensor(l_np, device=device)
+        ds = len(s_t)
+        idxs = np.arange(ds)
+        for _ in range(EPOCHS_PER_GAME):
+            np.random.shuffle(idxs)
+            for start_idx in range(0, ds, BATCH_SIZE):
+                b_idx = idxs[start_idx:start_idx+BATCH_SIZE]
+                batch_states = s_t[b_idx]
+                batch_labels = l_t[b_idx]
+                self.optimizer.zero_grad()
+                preds = self.policy_net(batch_states)
+                loss = self.criterion(preds, batch_labels)
+                loss.backward()
+                self.optimizer.step()
+        self.game_memory = []
+
 class HumanVsAIGUI:
     def __init__(self, human_is_white=True):
         self.human_is_white = human_is_white

@@ -46,35 +46,36 @@ else:
 print(f"Using device: {device}")
 
 # ---------------------------
-# Hyperparameters
+# Hyperparameters and File Paths
 # ---------------------------
-STATE_SIZE = 768         # 12 channels x 8x8
-MOVE_SIZE = 128          # from-square + to-square = 128
-INPUT_SIZE = STATE_SIZE + MOVE_SIZE
+STATE_SIZE = 768         # 12 channels x 8x8 (board representation)
+MOVE_SIZE = 128          # from-square (64) + to-square (64) one-hot encoded
+INPUT_SIZE = STATE_SIZE + MOVE_SIZE  # Total input size
 
-HIDDEN_SIZE = 512
-MAX_SEARCH_DEPTH = 4
-MOVE_TIME_LIMIT = 10.0    # used only to limit AI search time
-EPS_START = 1.0
-EPS_END = 0.05
-EPS_DECAY = 0.9999
+HIDDEN_SIZE = 1024       # Number of neurons per hidden layer; adjust between 256-1024
+MAX_SEARCH_DEPTH = 6     # Maximum depth for minimax search; typical values: 3-6
+MOVE_TIME_LIMIT = 20.0   # Maximum seconds allowed for AI move computation
 
-# Clocks are informational only.
-INITIAL_CLOCK = 300.0     
+EPS_START = 1.0          # Starting epsilon for epsilon-greedy policy (full exploration)
+EPS_END = 0.05           # Minimum epsilon; ensures some exploration persists
+EPS_DECAY = 0.9999       # Epsilon decay rate per move
 
-MODEL_SAVE_FREQ = 50
-TABLE_SAVE_FREQ = 50
+INITIAL_CLOCK = 300.0    # Informational clock in seconds (5 minutes)
 
+MODEL_SAVE_FREQ = 50     # Frequency (global moves) to save the model weights
+TABLE_SAVE_FREQ = 50     # Frequency (global moves) to save the transposition table
+
+# File paths for saving models and transposition tables
 MODEL_SAVE_PATH_WHITE = "white_dqn.pt"
 MODEL_SAVE_PATH_BLACK = "black_dqn.pt"
 TABLE_SAVE_PATH_WHITE = "white_transposition.pkl"
 TABLE_SAVE_PATH_BLACK = "black_transposition.pkl"
 
-LEARNING_RATE = 1e-3
-BATCH_SIZE = 32
-EPOCHS_PER_GAME = 3
+LEARNING_RATE = 1e-3     # Learning rate for the optimizer
+BATCH_SIZE = 128         # Batch size for training
+EPOCHS_PER_GAME = 3      # Number of epochs to train on game memory after each game
 
-STATS_FILE = "stats.pkl"  # for global wins/losses/draws and move counts
+STATS_FILE = "stats.pkl" # File to store global game statistics
 
 # ------------------------------------------------
 # Stats Manager
@@ -493,7 +494,7 @@ class SelfPlayGUI:
         self.fig.canvas.draw_idle()
 
 # ------------------------------------------------
-# Human vs AI GUI (with Control Buttons and CTRL+Q)
+# Human vs AI GUI (with Control Buttons, CTRL+Q, and Detailed Stats)
 # ------------------------------------------------
 class HumanVsAIGUI:
     def __init__(self, human_is_white=True):

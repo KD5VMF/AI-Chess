@@ -64,9 +64,10 @@ FAMOUS_MOVES = {
 USE_MCTS = True
 
 # ---------------------------
-# GPU Selection
+# GPU Selection and Tensor Core Detection
 # ---------------------------
 num_devices = torch.cuda.device_count()
+use_amp = False  # Flag for Automatic Mixed Precision (AMP)
 if num_devices == 0:
     print("No CUDA devices found. Running on CPU.")
     device = torch.device("cpu")
@@ -82,7 +83,16 @@ else:
         device = torch.device(f"cuda:{chosen}")
     else:
         device = torch.device("cpu")
+    if device.type == "cuda":
+        gpu_name = torch.cuda.get_device_name(device)
+        if "RTX" in gpu_name.upper():
+            amp_input = input("Your GPU is an RTX and supports Tensor Cores. Do you want to enable Tensor Core usage (mixed precision via AMP) for this run? [y/n]: ").strip().lower()
+            use_amp = (amp_input == "y")
+        else:
+            use_amp = False
+
 print(f"Using device: {device}")
+print(f"Mixed precision (AMP) enabled: {use_amp}")
 
 # ---------------------------
 # Hyperparameters and File Paths
@@ -100,8 +110,8 @@ EPS_DECAY = 0.9999       # Decay per move
 
 INITIAL_CLOCK = 300.0    # Informational clock (seconds)
 
-MODEL_SAVE_FREQ = 50     # Save model every X global moves
-TABLE_SAVE_FREQ = 50     # Save transposition table every X global moves
+# We'll save in self-play mode only once per minute:
+SAVE_INTERVAL_SECONDS = 60
 
 MODEL_SAVE_PATH_WHITE = "white_dqn.pt"
 MODEL_SAVE_PATH_BLACK = "black_dqn.pt"
@@ -235,7 +245,13 @@ class MCTSNode:
         return len(self.children) == 0
 
     def best_child(self, c_param=1.4):
-        return max(self.children.values(), key=lambda node: (node.total_value / node.visits) + c_param * math.sqrt(math.log(self.visits) / node.visits))
+        # Return an unvisited child immediately to force exploration.
+        for child in self.children.values():
+            if child.visits == 0:
+                return child
+        # Otherwise, use the UCB formula.
+        return max(self.children.values(), key=lambda node: (node.total_value / node.visits) +
+                   c_param * math.sqrt(math.log(self.visits) / node.visits))
 
 def mcts_search(root_board, neural_agent, num_simulations=100):
     root = MCTSNode(root_board.copy())
@@ -293,13 +309,16 @@ class ChessAgent:
             except Exception as e:
                 print(f"Error loading transposition table from {self.table_path}: {e}. Initializing empty table.")
                 self.transposition_table = {}
+
     def save_model(self):
         torch.save(self.policy_net.state_dict(), self.model_path)
         print(f"{self.name}: Model saved to {self.model_path}")
+
     def save_transposition_table(self):
         with open(self.table_path, "wb") as f:
             pickle.dump(self.transposition_table, f)
         print(f"{self.name}: Transposition table saved with {len(self.transposition_table)} entries.")
+
     def evaluate_board(self, board):
         fen = board.fen()
         if fen in self.transposition_table:
@@ -309,9 +328,14 @@ class ChessAgent:
         inp = np.concatenate([st, dm])
         inp_t = torch.tensor(inp, dtype=torch.float32, device=device).unsqueeze(0)
         with torch.no_grad():
-            val = self.policy_net(inp_t).item()
+            if use_amp:
+                with torch.cuda.amp.autocast():
+                    val = self.policy_net(inp_t).item()
+            else:
+                val = self.policy_net(inp_t).item()
         self.transposition_table[fen] = val
         return val
+
     def evaluate_candidate_move(self, board, move):
         move_san = board.san(move)
         move_san_clean = move_san.replace("!", "").replace("?", "")
@@ -320,6 +344,7 @@ class ChessAgent:
         score = self.evaluate_board(board)
         board.pop()
         return score + bonus
+
     def select_move(self, board, opponent_agent):
         is_white_turn = board.turn == chess.WHITE
         if (self.name == "white" and is_white_turn) or (self.name == "black" and not is_white_turn):
@@ -345,11 +370,13 @@ class ChessAgent:
                         best_score = score
                         best_move = move
                 return best_move
+
     def iterative_deepening(self, board, opponent_agent):
         end_time = time.time() + MOVE_TIME_LIMIT
         best_move = None
         depth = 1
         while depth <= MAX_SEARCH_DEPTH and time.time() < end_time:
+            # Note: minimax_with_time function is assumed to be defined elsewhere.
             val, mv = minimax_with_time(
                 board,
                 depth,
@@ -364,6 +391,7 @@ class ChessAgent:
                 best_move = mv
             depth += 1
         return best_move
+
     def train_after_game(self, result):
         if not self.game_memory:
             return
@@ -373,6 +401,7 @@ class ChessAgent:
         lb_t = torch.tensor(arr_labels, device=device)
         ds = len(st_t)
         idxs = np.arange(ds)
+        scaler = torch.cuda.amp.GradScaler() if use_amp else None
         for _ in range(EPOCHS_PER_GAME):
             np.random.shuffle(idxs)
             for start_idx in range(0, ds, BATCH_SIZE):
@@ -380,10 +409,18 @@ class ChessAgent:
                 batch_states = st_t[b_idx]
                 batch_labels = lb_t[b_idx]
                 self.optimizer.zero_grad()
-                preds = self.policy_net(batch_states)
-                loss = self.criterion(preds, batch_labels)
-                loss.backward()
-                self.optimizer.step()
+                if use_amp:
+                    with torch.cuda.amp.autocast():
+                        preds = self.policy_net(batch_states)
+                        loss = self.criterion(preds, batch_labels)
+                    scaler.scale(loss).backward()
+                    scaler.step(self.optimizer)
+                    scaler.update()
+                else:
+                    preds = self.policy_net(batch_states)
+                    loss = self.criterion(preds, batch_labels)
+                    loss.backward()
+                    self.optimizer.step()
         self.game_memory = []
 
 # ------------------------------------------------
@@ -392,6 +429,7 @@ class ChessAgent:
 def self_play_training_faster():
     agent_white = ChessAgent("white", MODEL_SAVE_PATH_WHITE, TABLE_SAVE_PATH_WHITE)
     agent_black = ChessAgent("black", MODEL_SAVE_PATH_BLACK, TABLE_SAVE_PATH_BLACK)
+    last_save_time = time.time()
     while True:
         try:
             board = chess.Board()
@@ -409,13 +447,16 @@ def self_play_training_faster():
                 agent_white.clock -= elapsed
                 agent_black.clock -= elapsed
                 stats_manager.global_move_count += 1
-                if stats_manager.global_move_count % MODEL_SAVE_FREQ == 0:
+
+                # Save everything once per SAVE_INTERVAL_SECONDS (e.g., 60 seconds)
+                if time.time() - last_save_time >= SAVE_INTERVAL_SECONDS:
                     agent_white.save_model()
                     agent_black.save_model()
-                if stats_manager.global_move_count % TABLE_SAVE_FREQ == 0:
                     agent_white.save_transposition_table()
                     agent_black.save_transposition_table()
-                stats_manager.save_stats()
+                    stats_manager.save_stats()
+                    last_save_time = time.time()
+
             if board.is_game_over():
                 res = board.result()
                 stats_manager.record_result(res)
@@ -428,6 +469,8 @@ def self_play_training_faster():
                 else:
                     agent_white.train_after_game(0)
                     agent_black.train_after_game(0)
+
+            # End-of-game saving
             agent_white.save_model()
             agent_black.save_model()
             agent_white.save_transposition_table()
@@ -466,16 +509,19 @@ class SelfPlayGUI:
         self.draw_board()
         self.ani = animation.FuncAnimation(self.fig, self.update, interval=1000, blit=False, cache_frame_data=False)
         plt.show()
+
     def reset_callback(self, event):
         self.board = chess.Board()
         self.move_counter = 0
         self.current_game_start_time = time.time()
         self.draw_board()
         print("Board reset.")
+
     def stop_callback(self, event):
         self.save_callback(event)
         plt.close(self.fig)
         print("Game stopped.")
+
     def save_callback(self, event):
         self.agent_white.save_model()
         self.agent_black.save_model()
@@ -483,11 +529,13 @@ class SelfPlayGUI:
         self.agent_black.save_transposition_table()
         stats_manager.save_stats()
         print("Game and model saved.")
+
     def on_key_press(self, event):
         if event.key.lower() == "ctrl+q":
             print("CTRL+Q pressed. Saving and quitting...")
             self.save_callback(event)
             plt.close(self.fig)
+
     def update(self, frame):
         if not self.board.is_game_over():
             move_start = time.time()
@@ -523,6 +571,7 @@ class SelfPlayGUI:
             print(f"Self-Play Stats: {stats_manager}")
         self.draw_board()
         return []
+
     def draw_board(self):
         self.ax_board.clear()
         light_sq = "#F0D9B5"
@@ -545,6 +594,7 @@ class SelfPlayGUI:
         self.ax_board.set_yticks([])
         self.ax_board.set_aspect('equal')
         game_time = time.time() - self.current_game_start_time
+        precision_mode = "Tensor Cores (AMP)" if use_amp else "CUDA FP32"
         info = (f"Mode: AI vs AI (Self-Play)\n"
                 f"Total Games: {stats_manager.total_games}\n"
                 f"Global Moves: {stats_manager.global_move_count}\n"
@@ -552,7 +602,8 @@ class SelfPlayGUI:
                 f"Game Duration: {game_time:.1f}s\n"
                 f"White Wins: {stats_manager.wins_white}\n"
                 f"Black Wins: {stats_manager.wins_black}\n"
-                f"Draws: {stats_manager.draws}\n")
+                f"Draws: {stats_manager.draws}\n"
+                f"Precision Mode: {precision_mode}")
         self.ax_info.clear()
         self.ax_info.axis('off')
         self.ax_info.text(0, 0.5, info, transform=self.ax_info.transAxes, va='center', ha='left', fontsize=12,
@@ -587,13 +638,16 @@ class GUIChessAgent:
             except Exception as e:
                 print(f"Error loading transposition table from {self.table_path}: {e}. Using empty table.")
                 self.transposition_table = {}
+
     def save_model(self):
         torch.save(self.policy_net.state_dict(), self.model_path)
         print(f"AI model saved to {self.model_path}")
+
     def save_table(self):
         with open(self.table_path, "wb") as f:
             pickle.dump(self.transposition_table, f)
         print(f"AI table saved to {self.table_path}")
+
     def evaluate_board(self, board):
         fen = board.fen()
         if fen in self.transposition_table:
@@ -603,9 +657,14 @@ class GUIChessAgent:
         inp = np.concatenate([st, dm])
         inp_t = torch.tensor(inp, dtype=torch.float32, device=device).unsqueeze(0)
         with torch.no_grad():
-            val = self.policy_net(inp_t).item()
+            if use_amp:
+                with torch.cuda.amp.autocast():
+                    val = self.policy_net(inp_t).item()
+            else:
+                val = self.policy_net(inp_t).item()
         self.transposition_table[fen] = val
         return val
+
     def select_move(self, board):
         if board.turn == self.ai_is_white:
             s = board_to_tensor(board)
@@ -618,6 +677,7 @@ class GUIChessAgent:
             return random.choice(moves)
         else:
             return self.iterative_deepening(board)
+
     def iterative_deepening(self, board):
         end_time = time.time() + MOVE_TIME_LIMIT
         best_move = None
@@ -637,6 +697,7 @@ class GUIChessAgent:
                 best_move = mv
             depth += 1
         return best_move
+
     def train_after_game(self, result):
         if not self.game_memory:
             return
@@ -646,6 +707,7 @@ class GUIChessAgent:
         l_t = torch.tensor(l_np, device=device)
         ds = len(s_t)
         idxs = np.arange(ds)
+        scaler = torch.cuda.amp.GradScaler() if use_amp else None
         for _ in range(EPOCHS_PER_GAME):
             np.random.shuffle(idxs)
             for start_idx in range(0, ds, BATCH_SIZE):
@@ -653,10 +715,18 @@ class GUIChessAgent:
                 batch_states = s_t[b_idx]
                 batch_labels = l_t[b_idx]
                 self.optimizer.zero_grad()
-                preds = self.policy_net(batch_states)
-                loss = self.criterion(preds, batch_labels)
-                loss.backward()
-                self.optimizer.step()
+                if use_amp:
+                    with torch.cuda.amp.autocast():
+                        preds = self.policy_net(batch_states)
+                        loss = self.criterion(preds, batch_labels)
+                    scaler.scale(loss).backward()
+                    scaler.step(self.optimizer)
+                    scaler.update()
+                else:
+                    preds = self.policy_net(batch_states)
+                    loss = self.criterion(preds, batch_labels)
+                    loss.backward()
+                    self.optimizer.step()
         self.game_memory = []
 
 class HumanVsAIGUI:
@@ -688,26 +758,31 @@ class HumanVsAIGUI:
         self.draw_board()
         self.cid = self.fig.canvas.mpl_connect('button_press_event', self.on_click)
         plt.show()
+
     def reset_callback(self, event):
         self.board = chess.Board()
         self.move_counter = 0
         self.status_message = "Your move" if self.board.turn == self.human_is_white else "AI is thinking..."
         self.draw_board()
         print("Board reset.")
+
     def stop_callback(self, event):
         self.save_callback(event)
         plt.close(self.fig)
         print("Game stopped.")
+
     def save_callback(self, event):
         self.ai_agent.save_model()
         self.ai_agent.save_table()
         stats_manager.save_stats()
         print("Game and model saved.")
+
     def on_key_press(self, event):
         if event.key.lower() == "ctrl+q":
             print("CTRL+Q pressed. Saving and quitting...")
             self.save_callback(event)
             plt.close(self.fig)
+
     def on_click(self, event):
         if self.board.is_game_over():
             print("Game Over. Close the window.")
@@ -723,6 +798,7 @@ class HumanVsAIGUI:
             else:
                 self.status_message = "AI is thinking..."
                 self.draw_board()
+
     def handle_human_click(self, sq):
         if self.selected_square is None:
             piece = self.board.piece_at(sq)
@@ -762,6 +838,7 @@ class HumanVsAIGUI:
             else:
                 print("Illegal move.")
                 self.selected_square = None
+
     def ai_move(self):
         self.status_message = "AI is thinking..."
         self.draw_board()
@@ -788,6 +865,7 @@ class HumanVsAIGUI:
                     return
         t = threading.Thread(target=compute_ai_move)
         t.start()
+
     def handle_game_over(self):
         print("Game Over:", self.board.result())
         res = self.board.result()
@@ -798,6 +876,7 @@ class HumanVsAIGUI:
         else:
             ai_win = None
         self.finish_game(ai_win)
+
     def finish_game(self, ai_win):
         if ai_win is True:
             final = +1
@@ -823,6 +902,7 @@ class HumanVsAIGUI:
         self.ai_agent.save_table()
         stats_manager.save_stats()
         print(f"Human vs AI Stats: {stats_manager}")
+
     def draw_board(self):
         self.ax_board.clear()
         light_sq = "#F0D9B5"
@@ -846,17 +926,13 @@ class HumanVsAIGUI:
         self.ax_board.set_aspect('equal')
         turn_str = "White" if self.board.turn else "Black"
         move_status = "Your move" if self.board.turn == self.human_is_white else "AI is thinking..."
+        precision_mode = "Tensor Cores (AMP)" if use_amp else "CUDA FP32"
         info = (f"Turn: {turn_str}\n"
                 f"Status: {self.status_message}\n"
+                f"Precision Mode: {precision_mode}\n"
                 f"Human Clock: {self.human_clock:.1f}\n"
                 f"AI Clock: {self.ai_clock:.1f}\n"
                 f"Moves played: {self.move_counter}")
-        if self.board.is_check():
-            if self.board.turn == self.human_is_white:
-                check_message = "You're in Check!"
-            else:
-                check_message = "AI is in Check!"
-            info += f"\n*** {check_message} ***"
         self.ax_info.clear()
         self.ax_info.axis('off')
         self.ax_info.text(0, 0.5, info, transform=self.ax_info.transAxes, va='center', ha='left', fontsize=12,

@@ -101,7 +101,7 @@ STATE_SIZE = 768         # 12 channels * 8x8 board = 768
 MOVE_SIZE = 128          # 64 (from) + 64 (to)
 INPUT_SIZE = STATE_SIZE + MOVE_SIZE
 
-HIDDEN_SIZE = 512        # Number of neurons in hidden layers
+HIDDEN_SIZE = 1024       # Number of neurons in hidden layers
 MAX_SEARCH_DEPTH = 4     # Maximum search depth for minimax/MCTS
 MOVE_TIME_LIMIT = 10.0   # Maximum seconds allowed for move computation
 EPS_START = 1.0          # Initial exploration rate (random moves)
@@ -110,7 +110,7 @@ EPS_DECAY = 0.9999       # Decay per move
 
 INITIAL_CLOCK = 300.0    # Informational clock (seconds)
 
-# We'll save in self-play mode only once per minute:
+# In no-GUI mode, we want to save to disk only once per minute:
 SAVE_INTERVAL_SECONDS = 60
 
 MODEL_SAVE_PATH_WHITE = "white_dqn.pt"
@@ -376,7 +376,7 @@ class ChessAgent:
         best_move = None
         depth = 1
         while depth <= MAX_SEARCH_DEPTH and time.time() < end_time:
-            # Note: minimax_with_time function is assumed to be defined elsewhere.
+            # Note: minimax_with_time is assumed defined elsewhere.
             val, mv = minimax_with_time(
                 board,
                 depth,
@@ -424,12 +424,30 @@ class ChessAgent:
         self.game_memory = []
 
 # ------------------------------------------------
+# Background Saver Thread for No-GUI Mode
+# ------------------------------------------------
+def background_saver(agent_white, agent_black, stats_manager):
+    while True:
+        time.sleep(SAVE_INTERVAL_SECONDS)
+        try:
+            agent_white.save_model()
+            agent_black.save_model()
+            agent_white.save_transposition_table()
+            agent_black.save_transposition_table()
+            stats_manager.save_stats()
+            print("Background saver: Saved models, transposition tables, and stats.")
+        except Exception as e:
+            print(f"Background saver error: {e}")
+
+# ------------------------------------------------
 # Self-Play Training (Faster) Mode (No Visual)
 # ------------------------------------------------
 def self_play_training_faster():
     agent_white = ChessAgent("white", MODEL_SAVE_PATH_WHITE, TABLE_SAVE_PATH_WHITE)
     agent_black = ChessAgent("black", MODEL_SAVE_PATH_BLACK, TABLE_SAVE_PATH_BLACK)
-    last_save_time = time.time()
+    # Start the background saver thread (daemon mode so it doesn't block program exit)
+    saver_thread = threading.Thread(target=background_saver, args=(agent_white, agent_black, stats_manager), daemon=True)
+    saver_thread.start()
     while True:
         try:
             board = chess.Board()
@@ -448,15 +466,6 @@ def self_play_training_faster():
                 agent_black.clock -= elapsed
                 stats_manager.global_move_count += 1
 
-                # Save everything once per SAVE_INTERVAL_SECONDS (e.g., 60 seconds)
-                if time.time() - last_save_time >= SAVE_INTERVAL_SECONDS:
-                    agent_white.save_model()
-                    agent_black.save_model()
-                    agent_white.save_transposition_table()
-                    agent_black.save_transposition_table()
-                    stats_manager.save_stats()
-                    last_save_time = time.time()
-
             if board.is_game_over():
                 res = board.result()
                 stats_manager.record_result(res)
@@ -470,12 +479,7 @@ def self_play_training_faster():
                     agent_white.train_after_game(0)
                     agent_black.train_after_game(0)
 
-            # End-of-game saving
-            agent_white.save_model()
-            agent_black.save_model()
-            agent_white.save_transposition_table()
-            agent_black.save_transposition_table()
-            stats_manager.save_stats()
+            # Instead of saving at game end, we rely on the background saver.
             print(f"Faster Training Stats: {stats_manager}")
         except KeyboardInterrupt:
             print("Stopping faster self-play training...")
@@ -483,6 +487,7 @@ def self_play_training_faster():
 
 # ------------------------------------------------
 # Self-Play Training (Slower) with Visual Mode (AI vs AI)
+# (GUI modes remain unchanged)
 # ------------------------------------------------
 class SelfPlayGUI:
     def __init__(self):

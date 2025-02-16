@@ -1,84 +1,118 @@
+"""
+===============================================================================
+                            MASTER AI CHESS
+===============================================================================
+Title: Master AI Chess
+
+About:
+    Master AI Chess is a self-training chess engine that learns from self-play
+    and human-versus-AI games. It uses a Deep Q-Network (DQN) to evaluate board
+    positions and can optionally use Monte Carlo Tree Search (MCTS) for move selection.
+    The engine maintains separate model and transposition table files for white and
+    black agents, and a master file that aggregates the best learned knowledge from all games.
+    
+    Modes:
+      1. Self-play training (Faster) - runs without board animation for rapid training.
+      2. Self-play training (Slower) - visual AI vs AI self-play with a graphical board.
+      3. Human vs AI (Graphical)  - allows a human player to compete against the AI, which uses
+                                   the combined master knowledge.
+
+Usage:
+    Run the script and choose a mode from the main menu. In Human vs AI mode, you can select
+    to play as White or Black.
+
+Notes:
+    - Errors (especially those related to DPI issues in Matplotlib) are logged to "error_log.txt"
+      and suppressed from console output.
+    - Detailed inline comments are provided throughout the code to explain functionality.
+===============================================================================
+"""
+
+# Set environment variable to allow duplicate OpenMP libraries.
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
+# Suppress warnings related to "dpi" using Python's warnings module.
 import warnings
-warnings.filterwarnings("ignore", message=".*dpi.*")  # Suppress warnings containing "dpi"
+warnings.filterwarnings("ignore", message=".*dpi.*")
 
+# Set up logging to file. All errors are logged to "error_log.txt".
 import logging
 logging.basicConfig(filename="error_log.txt",
                     level=logging.ERROR,
                     format='%(asctime)s - %(levelname)s - %(message)s',
                     datefmt='%Y-%m-%d %H:%M:%S')
 
-import threading
-import torch
+# Import required modules.
+import threading         # For background threads (e.g., saving models).
+import torch             # For PyTorch deep learning framework.
 import torch.nn as nn
 import torch.optim as optim
 import random
 import numpy as np
-import chess
+import chess             # python-chess library for board representation.
 import time
 import math
-import pickle
+import pickle            # For saving/loading Python objects.
 import matplotlib.pyplot as plt
 from matplotlib import animation
 from matplotlib.widgets import Button
 
-# ---------------------------
-# Hyperparameters & Configuration Variables for AI
-# ---------------------------
-STATE_SIZE = 768         
-MOVE_SIZE = 128          
-INPUT_SIZE = STATE_SIZE + MOVE_SIZE  
+# =============================================================================
+# Hyperparameters & Configuration Variables
+# =============================================================================
+STATE_SIZE = 768         # 12 channels * 8x8 board representation.
+MOVE_SIZE = 128          # 64 from-square + 64 to-square binary encoding.
+INPUT_SIZE = STATE_SIZE + MOVE_SIZE  # Total input vector size.
 
-HIDDEN_SIZE = 12288      
-NUM_HIDDEN_LAYERS = 3    
-DROPOUT_PROB = 0.0       
+HIDDEN_SIZE = 12288      # Number of neurons in hidden layers.
+NUM_HIDDEN_LAYERS = 3    # (Not used directly; the network is defined in a simple Sequential.)
+DROPOUT_PROB = 0.0       # Dropout probability (unused here).
 
-LEARNING_RATE = 1e-3     
-BATCH_SIZE = 16          
-EPOCHS_PER_GAME = 3      
-EPS_START = 1.0          
-EPS_END = 0.05           
-EPS_DECAY = 0.9999       
+LEARNING_RATE = 1e-3     # Learning rate for the optimizer.
+BATCH_SIZE = 16          # Batch size during training.
+EPOCHS_PER_GAME = 3      # Number of training epochs per game.
+EPS_START = 1.0          # Starting exploration rate.
+EPS_END = 0.05           # Minimum exploration rate.
+EPS_DECAY = 0.9999       # Epsilon decay factor per move.
 
-USE_MCTS = True             
-MCTS_SIMULATIONS = 50      
-MCTS_EXPLORATION_PARAM = 1.4  
+USE_MCTS = True          # Enable Monte Carlo Tree Search for move selection.
+MCTS_SIMULATIONS = 50    # Number of MCTS simulations per move.
+MCTS_EXPLORATION_PARAM = 1.4  # Exploration parameter in MCTS (affects UCB score).
 
-MOVE_TIME_LIMIT = 10.0   
-INITIAL_CLOCK = 300.0    
+MOVE_TIME_LIMIT = 10.0   # Maximum time (in seconds) allowed per move.
+INITIAL_CLOCK = 300.0    # Initial clock time (in seconds) for each player (informational).
 
-SAVE_INTERVAL_SECONDS = 60  
-MODEL_SAVE_PATH_WHITE = "white_dqn.pt"  
-MODEL_SAVE_PATH_BLACK = "black_dqn.pt"  
-TABLE_SAVE_PATH_WHITE = "white_transposition.pkl"  
-TABLE_SAVE_PATH_BLACK = "black_transposition.pkl"  
-STATS_FILE = "stats.pkl"  
+SAVE_INTERVAL_SECONDS = 60  # Interval (in seconds) for background saving.
+MODEL_SAVE_PATH_WHITE = "white_dqn.pt"     # File path for white agent model.
+MODEL_SAVE_PATH_BLACK = "black_dqn.pt"     # File path for black agent model.
+TABLE_SAVE_PATH_WHITE = "white_transposition.pkl"  # File path for white transposition table.
+TABLE_SAVE_PATH_BLACK = "black_transposition.pkl"  # File path for black transposition table.
+STATS_FILE = "stats.pkl"                    # File to save training statistics.
 
-MASTER_MODEL_SAVE_PATH = "master_dqn.pt"
-MASTER_TABLE_SAVE_PATH = "master_transposition.pkl"
+MASTER_MODEL_SAVE_PATH = "master_dqn.pt"    # File path for the master model.
+MASTER_TABLE_SAVE_PATH = "master_transposition.pkl"  # File path for the master transposition table.
 
-use_amp = False  
+use_amp = False          # Mixed precision flag (will be set based on GPU).
 
-# ---------------------------
-# Global Master Variables (in RAM)
-# ---------------------------
+# =============================================================================
+# Global Variables for Master Copy (stored in RAM)
+# =============================================================================
 MASTER_MODEL_RAM = None  
 MASTER_TABLE_RAM = {}    
 
-# ---------------------------
-# Global Unicode for Pieces
-# ---------------------------
+# =============================================================================
+# Global Unicode Mapping for Chess Pieces
+# =============================================================================
 piece_unicode = {
     'P': '♙', 'N': '♘', 'B': '♗', 'R': '♖', 'Q': '♕', 'K': '♔',
     'p': '♟', 'n': '♞', 'b': '♝', 'r': '♜', 'q': '♛', 'k': '♚'
 }
 piece_unicode_gui = piece_unicode.copy()
 
-# ---------------------------
-# Global Famous Moves Database
-# ---------------------------
+# =============================================================================
+# Global Famous Moves Database (Bonus scoring for known moves)
+# =============================================================================
 FAMOUS_MOVES = {
     "Qf6": 100, "Bd6": 120, "Rxd4": 110, "Nf4": 90, "Qg2": 130,
     "Qh5": 70, "Bxh6": 110, "Rxf7": 140, "Bxf7+": 150, "Nxd5": 80,
@@ -88,9 +122,9 @@ FAMOUS_MOVES = {
     "Bf5": 95, "Rxd5": 100, "Nxe5": 110
 }
 
-# ---------------------------
-# Helper Function: Print Formatted Stats (Clears Screen)
-# ---------------------------
+# =============================================================================
+# Helper Function: Print Formatted Training Statistics
+# =============================================================================
 def print_ascii_stats(stats):
     os.system('cls' if os.name == 'nt' else 'clear')
     print("=" * 60)
@@ -103,9 +137,9 @@ def print_ascii_stats(stats):
     print(f" Global Moves:  {stats.global_move_count}")
     print("=" * 60)
 
-# ---------------------------
+# =============================================================================
 # GPU Selection and Tensor Core Detection
-# ---------------------------
+# =============================================================================
 num_devices = torch.cuda.device_count()
 if num_devices == 0:
     print("No CUDA devices found. Running on CPU.")
@@ -133,9 +167,10 @@ else:
 print(f"Using device: {device}")
 print(f"Mixed precision (AMP) enabled: {use_amp}")
 
-# ---------------------------
+# =============================================================================
 # StatsManager Class
-# ---------------------------
+# Manages loading and saving training statistics.
+# =============================================================================
 class StatsManager:
     def __init__(self, filename=STATS_FILE):
         self.filename = filename
@@ -197,9 +232,10 @@ class StatsManager:
 
 stats_manager = StatsManager()
 
-# ---------------------------
+# =============================================================================
 # Neural Network (ChessDQN) Class
-# ---------------------------
+# Implements a simple feedforward network to evaluate chess positions.
+# =============================================================================
 class ChessDQN(nn.Module):
     def __init__(self, input_size, hidden_size):
         super(ChessDQN, self).__init__()
@@ -213,9 +249,10 @@ class ChessDQN(nn.Module):
     def forward(self, x):
         return self.net(x)
 
-# ---------------------------
+# =============================================================================
 # Board and Move Encoding Functions
-# ---------------------------
+# Converts chess.Board to a flat tensor and moves to one-hot encoded vectors.
+# =============================================================================
 def board_to_tensor(board):
     piece_to_channel = {
         chess.PAWN: 0, chess.KNIGHT: 1, chess.BISHOP: 2,
@@ -238,9 +275,10 @@ def move_to_tensor(move):
     v[64 + move.to_square] = 1.0
     return v
 
-# ---------------------------
+# =============================================================================
 # MCTS Node and Search Functions
-# ---------------------------
+# Implements a basic Monte Carlo Tree Search (MCTS) for move selection.
+# =============================================================================
 class MCTSNode:
     def __init__(self, board, parent=None, move=None):
         self.board = board
@@ -282,18 +320,21 @@ def mcts_search(root_board, neural_agent, num_simulations=MCTS_SIMULATIONS):
     best_move = max(root.children.items(), key=lambda item: item[1].visits)[0]
     return best_move
 
-# ---------------------------
+# =============================================================================
 # Placeholder for minimax_with_time
-# ---------------------------
+# Currently returns a random legal move; can be extended later.
+# =============================================================================
 def minimax_with_time(board, depth, alpha, beta, maximizing, agent_white, agent_black, end_time):
     legal_moves = list(board.legal_moves)
     if not legal_moves:
         return 0, None
     return 0, random.choice(legal_moves)
 
-# ---------------------------
-# Master Merge Functions (in RAM)
-# ---------------------------
+# =============================================================================
+# Master Merge Functions
+# Used to combine the knowledge (model weights and transposition tables) 
+# of two agents into a master copy.
+# =============================================================================
 def merge_state_dicts(state_dict1, state_dict2):
     merged = {}
     for key in state_dict1.keys():
@@ -321,7 +362,6 @@ def update_master_in_memory(agent_white, agent_black):
     MASTER_TABLE_RAM = merge_transposition_tables(white_table, black_table)
     print("Master copy (RAM) updated.")
 
-# New helper function: update master using current AI data
 def update_master_with_agent(agent):
     global MASTER_MODEL_RAM, MASTER_TABLE_RAM
     current_state = agent.policy_net.state_dict()
@@ -385,9 +425,11 @@ def load_master_into_agent(agent):
             except Exception as e:
                 logging.error(f"Error loading master transposition table from disk for {agent.name}: {e}")
 
-# ---------------------------
-# Background Saver Thread (Flushing to Disk)
-# ---------------------------
+# =============================================================================
+# Background Saver Thread
+# Runs continuously in the background to periodically save agent files
+# and flush the master copy to disk.
+# =============================================================================
 def background_saver(agent_white, agent_black, stats_manager):
     while True:
         time.sleep(SAVE_INTERVAL_SECONDS)
@@ -402,9 +444,10 @@ def background_saver(agent_white, agent_black, stats_manager):
         except Exception as e:
             logging.error(f"Background saver error: {e}")
 
-# ---------------------------
-# ChessAgent Class (for self-play)
-# ---------------------------
+# =============================================================================
+# ChessAgent Class (for Self-Play)
+# Implements an AI agent for self-play training.
+# =============================================================================
 class ChessAgent:
     def __init__(self, name, model_path, table_path):
         self.name = name
@@ -553,9 +596,11 @@ class ChessAgent:
                     self.optimizer.step()
         self.game_memory = []
 
-# ---------------------------
+# =============================================================================
 # GUIChessAgent Class (for Human vs AI)
-# ---------------------------
+# This agent is used by the HumanVsAIGUI mode to play against the human.
+# It always loads the master model and transposition table.
+# =============================================================================
 class GUIChessAgent:
     def __init__(self, ai_is_white):
         self.name = "human-vs-ai"
@@ -682,14 +727,15 @@ class GUIChessAgent:
                     self.optimizer.step()
         self.game_memory = []
 
-# ---------------------------
+# =============================================================================
 # Self-Play Training (Faster) Mode (No Visual)
-# ---------------------------
+# =============================================================================
 def self_play_training_faster():
     agent_white = ChessAgent("white", MODEL_SAVE_PATH_WHITE, TABLE_SAVE_PATH_WHITE)
     agent_black = ChessAgent("black", MODEL_SAVE_PATH_BLACK, TABLE_SAVE_PATH_BLACK)
     load_master_into_agent(agent_white)
     load_master_into_agent(agent_black)
+    # Start a background saver thread (daemon mode)
     saver_thread = threading.Thread(target=background_saver, args=(agent_white, agent_black, stats_manager), daemon=True)
     saver_thread.start()
     while True:
@@ -731,9 +777,9 @@ def self_play_training_faster():
             print("Stopping faster self-play training...")
             break
 
-# ---------------------------
+# =============================================================================
 # SelfPlayGUI Class (for AI vs AI with visual)
-# ---------------------------
+# =============================================================================
 class SelfPlayGUI:
     def __init__(self):
         self.agent_white = ChessAgent("white", MODEL_SAVE_PATH_WHITE, TABLE_SAVE_PATH_WHITE)
@@ -878,9 +924,9 @@ class SelfPlayGUI:
         except Exception as e:
             logging.error(f"Error during draw_board: {e}")
 
-# ---------------------------
+# =============================================================================
 # HumanVsAIGUI Class (for Human vs AI with visual)
-# ---------------------------
+# =============================================================================
 class HumanVsAIGUI:
     def __init__(self, human_is_white=True):
         self.human_is_white = human_is_white
@@ -1109,9 +1155,9 @@ class HumanVsAIGUI:
         except Exception as e:
             logging.error(f"Error during draw_board: {e}")
 
-# ---------------------------
+# =============================================================================
 # Main Menu
-# ---------------------------
+# =============================================================================
 def main():
     print("Welcome back! Current saved stats are:")
     print_ascii_stats(stats_manager)

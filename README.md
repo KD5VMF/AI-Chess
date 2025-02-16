@@ -1,102 +1,167 @@
-# Chess AI Self-Play and Human-vs-AI Training System
+# Chess DQN Reinforcement Learning Agent with MCTS and GUI
 
-This project implements a chess-playing artificial intelligence (AI) that continuously learns and improves through self-play and human interaction. It features a deep Q-network (DQN) combined with a minimax search (with iterative deepening) to evaluate board positions, and offers multiple modes of operation including self-play (both fast and animated) and a graphical human-vs-AI interface complete with control buttons.
+A Python-based chess engine that leverages deep reinforcement learning combined with Monte Carlo Tree Search (MCTS) for move evaluation. The program supports multiple modes—including fast self-play training (without board animation), an AI-vs-AI self-play visual mode, and a human-vs-AI interactive GUI—all built using PyTorch, python‑chess, and Matplotlib.
+
+---
 
 ## Table of Contents
 
 - [Overview](#overview)
 - [Features](#features)
-- [System Architecture](#system-architecture)
-  - [Neural Network](#neural-network)
+- [Architecture and Code Structure](#architecture-and-code-structure)
+  - [Neural Network: ChessDQN](#neural-network-chessdqn)
   - [Board and Move Encoding](#board-and-move-encoding)
-  - [Minimax with Iterative Deepening](#minimax-with-iterative-deepening)
-  - [AI Agent and Training](#ai-agent-and-training)
+  - [Monte Carlo Tree Search (MCTS)](#monte-carlo-tree-search-mcts)
+  - [Chess Agents](#chess-agents)
+  - [Self-Play Training Modes](#self-play-training-modes)
+  - [Graphical User Interfaces (GUI)](#graphical-user-interfaces-gui)
+  - [Statistics and Persistence](#statistics-and-persistence)
 - [Installation](#installation)
 - [Usage](#usage)
-  - [Modes of Operation](#modes-of-operation)
-  - [Graphical Human-vs-AI Interface](#graphical-human-vs-ai-interface)
-  - [Control Buttons](#control-buttons)
-- [How It Works](#how-it-works)
-- [Future Improvements](#future-improvements)
-- [Troubleshooting](#troubleshooting)
+- [Configuration and Hyperparameters](#configuration-and-hyperparameters)
+- [Contributing](#contributing)
 - [License](#license)
+
+---
 
 ## Overview
 
-This project is designed to create a chess AI that can learn from its own play as well as through interactions with human players. The AI uses a deep neural network to evaluate board positions and improve over time by training on game memories. Self-play is employed to generate training data continuously, while the human-vs-AI mode offers an interactive GUI for playing and learning.
+This project implements a chess engine that trains two agents (playing White and Black) via self-play. The agents learn to evaluate board positions using a deep neural network architecture (a simple feed-forward network) and improve through reinforcement learning. The engine also integrates MCTS to help with move selection and supports a bonus evaluation for a predefined set of “famous moves” in chess.
+
+Users can choose from several operational modes:
+
+1. **Self-Play Training (Faster Mode):** Runs AI vs AI games without board animation for rapid training.
+2. **Self-Play Training (Slower Mode with Visuals):** Displays animated board states during AI vs AI self-play.
+3. **Human vs AI (Graphical):** An interactive GUI for playing against the AI with board clicks and control buttons.
+
+---
 
 ## Features
 
-- **Multiple Modes:**  
-  - **Self-Play (Faster):** No board animation; optimized for rapid training.
-  - **Self-Play (Slower):** Animated board to watch each move and monitor progress.
-  - **Human-vs-AI (Graphical):** An interactive graphical interface with control buttons.
-  
-- **Deep Q-Network (DQN):**  
-  A feed-forward neural network that evaluates board states.
+- **Deep Reinforcement Learning:** Uses a DQN-style architecture to evaluate board positions.
+- **Monte Carlo Tree Search (MCTS):** Optionally uses MCTS for enhanced move exploration.
+- **Famous Moves Database:** Provides bonus evaluation scores for well-known tactical moves.
+- **Multiple Training Modes:**
+  - **Faster Self-Play:** No GUI, ideal for rapid training.
+  - **Slower Self-Play with Visuals:** Visualizes AI vs AI games using Matplotlib animations.
+  - **Human vs AI:** Interactive GUI with board clicks and key controls.
+- **Transposition Table:** Caches board evaluations to avoid redundant computation.
+- **GPU Support:** Automatically detects CUDA-enabled devices and lets the user choose which GPU to use (or fallback to CPU).
+- **Periodic Saving:** Models and transposition tables are saved periodically to disk, along with game statistics.
+- **User Controls in GUI:** Buttons for Reset, Stop, and Save, plus CTRL+Q key shortcut for graceful quitting.
 
-- **Minimax with Iterative Deepening:**  
-  A search algorithm that uses iterative deepening and a time cutoff to select moves.
+---
 
-- **Transposition Table:**  
-  Caches board evaluations to speed up the search.
+## Architecture and Code Structure
 
-- **Statistics Tracking:**  
-  Records wins, losses, draws, and global move counts for further analysis and training.
+### Neural Network: ChessDQN
 
-- **Control Buttons (Human-vs-AI Mode):**  
-  Buttons for resetting the board, stopping the game, and saving progress (model, transposition table, and statistics).
+The network is defined in the `ChessDQN` class and is responsible for evaluating the board state. It takes a combined input vector representing the board and move information and outputs a single evaluation value. The architecture is:
 
-- **Continuous Learning:**  
-  The AI continually improves its play through self-play and human interaction. Training progress is saved periodically.
+- **Input:** 896 dimensions (768 from a 12×8×8 board tensor + 128 from move encoding)
+- **Hidden Layers:** Two fully connected layers with 512 neurons each (with ReLU activations)
+- **Output:** Single neuron for board evaluation
 
-## System Architecture
-
-### Neural Network
-
-- **Architecture:**  
-  The AI uses a simple feed-forward network with two hidden layers (512 units each) and ReLU activations. The network takes a flattened board state (768 values from 12 channels of an 8x8 board) concatenated with a move encoding (128 values) as input and outputs a single scalar evaluation.
+```python
+class ChessDQN(nn.Module):
+    def __init__(self, input_size, hidden_size):
+        super(ChessDQN, self).__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, 1)
+        )
+    def forward(self, x):
+        return self.net(x)
+```
 
 ### Board and Move Encoding
 
-- **Board Encoding:**  
-  The board is represented as a 12×8×8 tensor where each of the 12 channels represents one type of piece (6 for white, 6 for black). This tensor is flattened to form part of the input to the neural network.
-  
-- **Move Encoding:**  
-  A move is encoded as a one-hot vector of length 128 (64 for the from-square and 64 for the to-square) and concatenated with the board tensor.
+The program uses two helper functions to convert the board state and moves into numerical tensors:
 
-### Minimax with Iterative Deepening
+- **`board_to_tensor(board)`**:  
+  Encodes the chess board into a flattened array. It uses 12 channels—6 for each color—to represent the location of each type of piece (Pawn, Knight, Bishop, Rook, Queen, King) over an 8×8 grid.
 
-- **Algorithm:**  
-  The minimax algorithm is used with alpha-beta pruning and iterative deepening. A time cutoff is enforced to limit the search depth for AI moves.
+- **`move_to_tensor(move)`**:  
+  Encodes a move as a one-hot vector of length 128 (64 for the source square and 64 for the destination square).
 
-- **Purpose:**  
-  It provides move selection by exploring future board states and using the neural network to evaluate positions.
+```python
+def board_to_tensor(board):
+    # Create a 12x8x8 tensor (flattened to a 768-length vector)
+    # Each channel corresponds to a specific piece type/color.
 
-### AI Agent and Training
+def move_to_tensor(move):
+    # Create a 128-length one-hot vector
+    #  - move.from_square -> index
+    #  - move.to_square -> index+64
+```
 
-- **Agent Class:**  
-  The `ChessAgent` class handles move selection, evaluation (with caching via the transposition table), and training. It uses an epsilon-greedy policy to balance exploration and exploitation.
-
-- **Training Process:**  
-  After each game, the agent trains on its stored game memory for a few epochs using mean squared error (MSE) loss between the predicted value and the game outcome.
+---
 
 ## Installation
 
-### Requirements
+### Prerequisites
 
-- **Python Version:**  
-  Python 3.7 or higher is recommended.
+- **Python 3.7+**
+- **PyTorch:** For the neural network (supports CPU and GPU).
+- **python-chess:** For board management and legal move generation.
+- **Matplotlib:** For drawing the board and GUI elements.
+- **NumPy:** For numerical computations.
 
-- **Dependencies:**  
-  - PyTorch
-  - NumPy
-  - python-chess
-  - Matplotlib
+### Installation Steps
 
-### Installing Dependencies
+1. **Clone the Repository:**
 
-Use `pip` to install the required packages:
+   ```bash
+   git clone https://github.com/yourusername/chess-dqn-agent.git
+   cd chess-dqn-agent
+   ```
+
+2. **Create and Activate a Virtual Environment (Optional but Recommended):**
+
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
+
+3. **Install Dependencies:**
+
+   ```bash
+   pip install torch torchvision
+   pip install python-chess matplotlib numpy
+   ```
+
+---
+
+## Usage
+
+Run the main program with:
 
 ```bash
-pip install torch numpy python-chess matplotlib
+python your_program.py
+```
+
+---
+
+## Contributing
+
+Contributions are welcome! If you have ideas for improvements, bug fixes, or new features:
+
+1. Fork the repository.
+2. Create a new branch (`git checkout -b feature/your-feature`).
+3. Commit your changes.
+4. Push to your fork and open a pull request.
+
+Please adhere to the code style and include comments where necessary.
+
+---
+
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
+---
+
+*Happy coding and enjoy exploring deep reinforcement learning in chess!*

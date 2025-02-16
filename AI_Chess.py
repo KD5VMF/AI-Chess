@@ -101,7 +101,7 @@ STATE_SIZE = 768         # 12 channels * 8x8 board = 768
 MOVE_SIZE = 128          # 64 (from) + 64 (to)
 INPUT_SIZE = STATE_SIZE + MOVE_SIZE
 
-HIDDEN_SIZE = 512        # Number of neurons in hidden layers  RTX 3060 12GB Use 12288 here. This will result in about 6Gb GDDR usage
+HIDDEN_SIZE = 512        # Number of neurons in hidden layers. (RTX 3060 12GB Use 12288 here. This will result in about 6Gb GDDR usage.)
 MAX_SEARCH_DEPTH = 4     # Maximum search depth for minimax/MCTS
 MOVE_TIME_LIMIT = 10.0   # Maximum seconds allowed for move computation
 EPS_START = 1.0          # Initial exploration rate (random moves)

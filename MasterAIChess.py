@@ -1,35 +1,43 @@
 """
 ===============================================================================
-                   ULTIMATE PERSISTENT MASTER AI CHESS ENGINE
+         ULTIMATE PERSISTENT REAL-TIME MASTER AI CHESS TRAINING ENGINE
 ===============================================================================
-Title: Ultimate Persistent Master AI Chess Engine
+Title: Ultimate Persistent Real-Time Master AI Chess Training Engine
 
 About:
-    This engine is a self-learning chess engine that continuously trains via
-    self-play and human-versus-AI matches. It uses a Deep Q-Network (DQN) to
-    evaluate board positions and can optionally employ Monte Carlo Tree Search
-    (MCTS) for move selection. The engine maintains separate model and transposition
-    table files for White and Black agents, as well as aggregated master files.
+    This engine is a self-learning chess system that continuously trains via
+    self-play and human-versus-AI matches. It employs a Deep Q-Network (DQN) to
+    evaluate board positions and may use Monte Carlo Tree Search (MCTS) for move
+    selection. The engine maintains separate model and transposition table files
+    for White and Black agents, and aggregates their knowledge into master files.
     
-    A key feature is the tracking of “accumulated training time” – a clock that
-    only advances when the engine is actively training. This time is saved as a
-    stat and reloaded on startup so that pausing training (even for long periods)
-    does not increment the training time. Training time is only cleared when new
-    stat files are created (i.e. when no saved files exist).
+    A key feature is the tracking of “active training time” – a clock that only
+    advances while the engine is actively training. This accumulated training time,
+    along with other real metrics (such as average moves per game, average time per
+    game, and games per hour), is saved to a stats file and reloaded on startup.
+    Thus, if training is paused for any length of time, the displayed training time
+    remains unchanged.
     
+    Additional real training data (derived from the saved stats) are computed and
+    displayed, including:
+      • Average Moves per Game
+      • Average Training Time per Game (in seconds)
+      • Games per Hour
+      
 Modes:
-    1. Self-play training (Faster): No board animation for rapid training.
-    2. Self-play training (Slower): AI vs AI self-play with a graphical board.
-    3. Human vs AI (Graphical): Play as a human against the AI (using master knowledge).
+    1. Self-play training (Faster): Runs without board animation for rapid training.
+    2. Self-play training (Slower): Visual AI vs AI self-play with a graphical board.
+    3. Human vs AI (Graphical): Play as a human against the AI (which uses master data).
 
 Usage:
-    Run the script and select a mode from the menu. In Human vs AI mode, choose
-    whether to play as White or Black.
+    Run the script and select a mode from the main menu. In Human vs AI mode, choose
+    to play as White or Black.
 
 Notes:
-    - Errors (especially DPI warnings from Matplotlib) are logged to "error_log.txt"
-      and suppressed from console output.
-    - All variables and functions are thoroughly commented to explain their roles.
+    - Errors (such as DPI warnings from Matplotlib) are logged to "error_log.txt" and
+      suppressed from console output.
+    - Detailed inline comments describe the purpose and functionality of each variable,
+      function, and code block.
 ===============================================================================
 """
 
@@ -37,11 +45,11 @@ Notes:
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
-# Suppress warnings (e.g. DPI warnings from Matplotlib).
+# Suppress warnings (e.g. DPI warnings).
 import warnings
 warnings.filterwarnings("ignore", message=".*dpi.*")
 
-# Set up logging so that errors are recorded in a file.
+# Set up logging so errors are saved to a file.
 import logging
 logging.basicConfig(filename="error_log.txt",
                     level=logging.ERROR,
@@ -56,9 +64,9 @@ import torch.optim as optim
 import random
 import numpy as np
 import chess             # python-chess library for board representation.
-import time              # For timing, including training time.
-import math              # For mathematical operations.
-import pickle            # For saving/loading Python objects.
+import time              # For timing functions (active training, moves, etc).
+import math              # For mathematical calculations.
+import pickle            # For saving/loading objects.
 import matplotlib.pyplot as plt
 from matplotlib import animation
 from matplotlib.widgets import Button
@@ -66,39 +74,39 @@ from matplotlib.widgets import Button
 # =============================================================================
 # Hyperparameters & Configuration Variables
 # =============================================================================
-STATE_SIZE = 768         # Board tensor size (12 channels * 8x8).
-MOVE_SIZE = 128          # One-hot move encoding (64 from + 64 to squares).
-INPUT_SIZE = STATE_SIZE + MOVE_SIZE  # Total input vector size for the network.
+STATE_SIZE = 768         # Board tensor size: 12 channels * 8x8 squares.
+MOVE_SIZE = 128          # One-hot move encoding: 64 from-squares + 64 to-squares.
+INPUT_SIZE = STATE_SIZE + MOVE_SIZE  # Total network input vector size.
 
-HIDDEN_SIZE = 12288      # Number of neurons in hidden layers.
-NUM_HIDDEN_LAYERS = 3    # Not directly used; defined in the network structure.
+HIDDEN_SIZE = 12288      # Neurons in hidden layers.
+NUM_HIDDEN_LAYERS = 3    # (Defined in the network structure below.)
 DROPOUT_PROB = 0.0       # Dropout probability (currently unused).
 
-LEARNING_RATE = 1e-3     # Learning rate for network optimizer.
-BATCH_SIZE = 64          # Batch size for training updates.
+LEARNING_RATE = 1e-3     # Learning rate for the optimizer.
+BATCH_SIZE = 64          # Batch size for training.
 EPOCHS_PER_GAME = 3      # Number of epochs to train after each game.
 EPS_START = 1.0          # Initial exploration rate.
 EPS_END = 0.05           # Minimum exploration rate.
-EPS_DECAY = 0.9999       # Decay factor per move.
+EPS_DECAY = 0.9999       # Decay factor for exploration per move.
 
 USE_MCTS = True          # Enable Monte Carlo Tree Search for move selection.
 MCTS_SIMULATIONS = 50    # Number of MCTS simulations per move.
 MCTS_EXPLORATION_PARAM = 1.4  # Exploration constant (for UCB in MCTS).
 
-MOVE_TIME_LIMIT = 60.0   # Maximum time (seconds) allowed per move.
-INITIAL_CLOCK = 300.0    # Initial clock time (seconds) for each player.
+MOVE_TIME_LIMIT = 60.0   # Maximum time (in seconds) allowed per move.
+INITIAL_CLOCK = 300.0    # Starting clock time (in seconds) for each player.
 
-SAVE_INTERVAL_SECONDS = 60  # Interval (seconds) for periodic saving.
-MODEL_SAVE_PATH_WHITE = "white_dqn.pt"      # File path for White agent model.
-MODEL_SAVE_PATH_BLACK = "black_dqn.pt"      # File path for Black agent model.
-TABLE_SAVE_PATH_WHITE = "white_transposition.pkl"  # File path for White agent transposition table.
-TABLE_SAVE_PATH_BLACK = "black_transposition.pkl"  # File path for Black agent transposition table.
+SAVE_INTERVAL_SECONDS = 60  # Interval (in seconds) for periodic saving.
+MODEL_SAVE_PATH_WHITE = "white_dqn.pt"      # Path for White agent's model.
+MODEL_SAVE_PATH_BLACK = "black_dqn.pt"      # Path for Black agent's model.
+TABLE_SAVE_PATH_WHITE = "white_transposition.pkl"  # Path for White agent's transposition table.
+TABLE_SAVE_PATH_BLACK = "black_transposition.pkl"  # Path for Black agent's transposition table.
 STATS_FILE = "stats.pkl"                    # File to store training statistics.
 
-MASTER_MODEL_SAVE_PATH = "master_dqn.pt"    # File path for the aggregated master model.
-MASTER_TABLE_SAVE_PATH = "master_transposition.pkl"  # File path for the aggregated master table.
+MASTER_MODEL_SAVE_PATH = "master_dqn.pt"    # Path for aggregated master model.
+MASTER_TABLE_SAVE_PATH = "master_transposition.pkl"  # Path for aggregated master table.
 
-use_amp = False          # Flag for mixed precision (AMP); set later based on GPU.
+use_amp = False          # Mixed precision flag (set later based on GPU capabilities).
 
 # =============================================================================
 # Global Variables for Master Copy (stored in RAM)
@@ -108,14 +116,13 @@ MASTER_TABLE_RAM = {}
 
 # =============================================================================
 # Global variable for tracking active training time.
-# This variable is set when training is active and is used to update the
-# accumulated training time in the stats.
+# This variable stores the timestamp when training is active.
 # =============================================================================
 training_active_start_time = None
 
 # =============================================================================
 # Helper Function: Format Duration
-# Converts a number of seconds into a string (Years, Months, Days, Hours, Minutes, Seconds).
+# Converts seconds into a human-readable string (Years, Months, Days, Hours, Minutes, Seconds).
 # =============================================================================
 def format_duration(total_seconds):
     years = total_seconds // 31536000
@@ -132,7 +139,7 @@ def format_duration(total_seconds):
 
 # =============================================================================
 # Helper Function: Format File Size
-# Converts file size in bytes to a human-readable string with appropriate units.
+# Converts file size in bytes to a human-readable format (e.g., KB, MB, GB).
 # =============================================================================
 def format_file_size(size_bytes):
     if size_bytes == 0:
@@ -155,7 +162,7 @@ piece_unicode_gui = piece_unicode.copy()
 
 # =============================================================================
 # Global Famous Moves Database
-# Provides bonus scores for well-known moves.
+# Provides bonus scores for recognized moves.
 # =============================================================================
 FAMOUS_MOVES = {
     "Qf6": 100, "Bd6": 120, "Rxd4": 110, "Nf4": 90, "Qg2": 130,
@@ -168,9 +175,9 @@ FAMOUS_MOVES = {
 
 # =============================================================================
 # StatsManager Class
-# Manages loading and saving of training statistics, including the persistent
-# accumulated training time. The accumulated training time only increases when
-# training is active.
+# Loads and saves training statistics including:
+#   - wins, draws, total games, global move count, and
+#   - accumulated active training time (only incrementing when training is active).
 # =============================================================================
 class StatsManager:
     def __init__(self, filename=STATS_FILE):
@@ -178,7 +185,6 @@ class StatsManager:
         self.load_stats()
 
     def load_stats(self):
-        # Load stats from file; if file is missing, initialize new stats.
         if os.path.exists(self.filename):
             try:
                 with open(self.filename, "rb") as f:
@@ -188,7 +194,6 @@ class StatsManager:
                 self.draws = data.get("draws", 0)
                 self.total_games = data.get("total_games", 0)
                 self.global_move_count = data.get("global_move_count", 0)
-                # Load accumulated training time; if missing, start at 0.
                 self.accumulated_training_time = data.get("accumulated_training_time", 0)
                 print("Stats loaded successfully.")
             except Exception as e:
@@ -208,7 +213,6 @@ class StatsManager:
             self.accumulated_training_time = 0
 
     def save_stats(self):
-        # Save all stats including the accumulated training time.
         data = {
             "wins_white": self.wins_white,
             "wins_black": self.wins_black,
@@ -243,7 +247,7 @@ stats_manager = StatsManager()
 # =============================================================================
 # Helper Function: Update Training Time
 # When training is active, this function adds the elapsed active time to the
-# accumulated training time (stored in stats_manager) and resets the active timer.
+# accumulated training time and resets the active timer.
 # =============================================================================
 def update_training_time():
     global training_active_start_time
@@ -254,8 +258,8 @@ def update_training_time():
 
 # =============================================================================
 # Helper Function: Get Total Training Time
-# Computes the total training time as the sum of the accumulated training time
-# and the current active period (if training is running).
+# Computes the total training time as the accumulated time plus the current
+# active period (if training is currently running).
 # =============================================================================
 def get_total_training_time():
     if training_active_start_time is not None:
@@ -265,8 +269,11 @@ def get_total_training_time():
 
 # =============================================================================
 # Helper Function: Print Formatted Training Statistics (ASCII)
-# Displays stats including games, wins, draws, global moves, master file sizes,
-# and the total training time (only advancing while training is active).
+# Displays real training data including:
+#   • Total games, wins, draws, global moves
+#   • Master file names and their sizes
+#   • Accumulated training time (active only)
+#   • Average moves per game, average time per game (in seconds), and games per hour
 # =============================================================================
 def print_ascii_stats(stats):
     os.system('cls' if os.name == 'nt' else 'clear')
@@ -278,7 +285,6 @@ def print_ascii_stats(stats):
     print(f" Black Wins:    {stats.wins_black}")
     print(f" Draws:         {stats.draws}")
     print(f" Global Moves:  {stats.global_move_count}")
-    # Get master file sizes.
     master_model_size = (format_file_size(os.path.getsize(MASTER_MODEL_SAVE_PATH))
                          if os.path.exists(MASTER_MODEL_SAVE_PATH) else "N/A")
     master_table_size = (format_file_size(os.path.getsize(MASTER_TABLE_SAVE_PATH))
@@ -287,6 +293,19 @@ def print_ascii_stats(stats):
           f"{MASTER_TABLE_SAVE_PATH} ({master_table_size})")
     total_training_time = get_total_training_time()
     print(f" Training Time: {format_duration(total_training_time)}")
+    # Compute additional real training data metrics.
+    if stats.total_games > 0:
+        avg_moves = stats.global_move_count / stats.total_games
+        avg_game_time = stats.accumulated_training_time / stats.total_games  # in seconds
+        games_per_hour = (stats.total_games / (stats.accumulated_training_time / 3600)
+                          if stats.accumulated_training_time > 0 else 0)
+    else:
+        avg_moves = 0
+        avg_game_time = 0
+        games_per_hour = 0
+    print(f" Avg Moves/Game: {avg_moves:.1f}")
+    print(f" Avg Time/Game:  {avg_game_time:.1f} s")
+    print(f" Games/Hour:     {games_per_hour:.2f}")
     print("=" * 60)
 
 # =============================================================================
@@ -321,28 +340,28 @@ print(f"Mixed precision (AMP) enabled: {use_amp}")
 
 # =============================================================================
 # Neural Network (ChessDQN) Class
-# Implements a simple feedforward network for evaluating chess board positions.
+# A simple feedforward network to evaluate chess board positions.
 # =============================================================================
 class ChessDQN(nn.Module):
     def __init__(self, input_size, hidden_size):
         super(ChessDQN, self).__init__()
-        # The network consists of two hidden layers with ReLU activations.
+        # Two hidden layers with ReLU activations.
         self.net = nn.Sequential(
-            nn.Linear(input_size, hidden_size),  
+            nn.Linear(input_size, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
-            nn.Linear(hidden_size, 1)  # Output is a single evaluation value.
+            nn.Linear(hidden_size, 1)  # Single output evaluation.
         )
     def forward(self, x):
         return self.net(x)
 
 # =============================================================================
 # Board and Move Encoding Functions
-# Converts a chess board to a flattened tensor and encodes moves as one-hot vectors.
+# Converts a chess.Board object to a flattened tensor and encodes moves.
 # =============================================================================
 def board_to_tensor(board):
-    # Map each piece type to a channel (first 6 channels for White, next 6 for Black).
+    # Map piece types to channels: first 6 channels for White, next 6 for Black.
     piece_to_channel = {
         chess.PAWN: 0, chess.KNIGHT: 1, chess.BISHOP: 2,
         chess.ROOK: 3, chess.QUEEN: 4, chess.KING: 5
@@ -359,7 +378,7 @@ def board_to_tensor(board):
     return arr.flatten()
 
 def move_to_tensor(move):
-    # One-hot encode the move (64 from-squares + 64 to-squares).
+    # One-hot encode the move (64 for from-square, 64 for to-square).
     v = np.zeros(MOVE_SIZE, dtype=np.float32)
     v[move.from_square] = 1.0
     v[64 + move.to_square] = 1.0
@@ -412,7 +431,7 @@ def mcts_search(root_board, neural_agent, num_simulations=MCTS_SIMULATIONS):
 
 # =============================================================================
 # Placeholder for minimax_with_time
-# Returns a random legal move (to be replaced with a proper minimax algorithm).
+# Returns a random legal move; can be replaced with a proper minimax algorithm.
 # =============================================================================
 def minimax_with_time(board, depth, alpha, beta, maximizing, agent_white, agent_black, end_time):
     legal_moves = list(board.legal_moves)
@@ -422,7 +441,7 @@ def minimax_with_time(board, depth, alpha, beta, maximizing, agent_white, agent_
 
 # =============================================================================
 # Master Merge Functions
-# Combine model weights and transposition tables from two agents into a master copy.
+# Merge model weights and transposition tables from two agents into a master copy.
 # =============================================================================
 def merge_state_dicts(state_dict1, state_dict2):
     merged = {}
@@ -516,7 +535,7 @@ def load_master_into_agent(agent):
 
 # =============================================================================
 # Background Saver Thread
-# Periodically saves agent models, transposition tables, stats, and flushes the master copy.
+# Periodically saves models, transposition tables, stats, and flushes the master copy.
 # =============================================================================
 def background_saver(agent_white, agent_black, stats_manager):
     while True:
@@ -539,18 +558,17 @@ def background_saver(agent_white, agent_black, stats_manager):
 class ChessAgent:
     def __init__(self, name, model_path, table_path):
         self.name = name
-        # Initialize the policy network.
         self.policy_net = ChessDQN(INPUT_SIZE, HIDDEN_SIZE).to(device)
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=LEARNING_RATE)
         self.criterion = nn.MSELoss()
         self.epsilon = EPS_START  # Exploration rate.
         self.steps = 0
         self.clock = INITIAL_CLOCK  # Player's clock.
-        self.model_path = model_path  # Path to save/load model.
-        self.table_path = table_path  # Path to save/load transposition table.
+        self.model_path = model_path  # Model save/load path.
+        self.table_path = table_path  # Transposition table save/load path.
         self.transposition_table = {}  # Cache for board evaluations.
-        self.table_lock = threading.Lock()  # Ensure thread-safe access.
-        self.game_memory = []  # Memory to store training examples.
+        self.table_lock = threading.Lock()  # For thread-safe access.
+        self.game_memory = []  # Memory for training examples.
         if os.path.exists(self.model_path):
             try:
                 self.policy_net.load_state_dict(torch.load(self.model_path, map_location=device))
@@ -600,7 +618,6 @@ class ChessAgent:
         return val
 
     def evaluate_candidate_move(self, board, move):
-        # Calculate a bonus if the move is well-known.
         move_san = board.san(move)
         move_san_clean = move_san.replace("!", "").replace("?", "")
         bonus = FAMOUS_MOVES.get(move_san_clean, 0)
@@ -656,7 +673,6 @@ class ChessAgent:
         return best_move
 
     def train_after_game(self, result):
-        # Train the network using the stored game memory and the final result.
         if not self.game_memory:
             return
         arr_states = np.array(self.game_memory, dtype=np.float32)
@@ -689,7 +705,7 @@ class ChessAgent:
 
 # =============================================================================
 # GUIChessAgent Class (for Human vs AI)
-# Loads the master model and table to serve as the AI opponent.
+# Loads the master model and transposition table to serve as the AI opponent.
 # =============================================================================
 class GUIChessAgent:
     def __init__(self, ai_is_white):
@@ -827,10 +843,10 @@ def self_play_training_faster():
     agent_black = ChessAgent("black", MODEL_SAVE_PATH_BLACK, TABLE_SAVE_PATH_BLACK)
     load_master_into_agent(agent_white)
     load_master_into_agent(agent_black)
-    # Start the background saver thread.
+    # Start background saver thread.
     saver_thread = threading.Thread(target=background_saver, args=(agent_white, agent_black, stats_manager), daemon=True)
     saver_thread.start()
-    # Start timing if not already running.
+    # Start active training timer if not already running.
     if training_active_start_time is None:
         training_active_start_time = time.time()
     while True:
@@ -853,7 +869,7 @@ def self_play_training_faster():
                 agent_black.clock -= elapsed
                 stats_manager.global_move_count += 1
 
-            # At game end, update training time.
+            # At game end, update the active training time.
             update_training_time()
 
             if board.is_game_over():
@@ -907,7 +923,7 @@ class SelfPlayGUI:
         self.fig.canvas.manager.set_window_title("AI vs AI (Self-Play)")
         self.draw_board()
         self.ani = animation.FuncAnimation(self.fig, self.update, interval=1000, blit=False, cache_frame_data=False)
-        # Start training time if not already running.
+        # Start active training timer if not already running.
         if training_active_start_time is None:
             training_active_start_time = time.time()
         plt.show()
@@ -967,7 +983,6 @@ class SelfPlayGUI:
                 else:
                     self.agent_white.train_after_game(0)
                     self.agent_black.train_after_game(0)
-                # Update training time at game end.
                 update_training_time()
                 update_master_in_memory(self.agent_white, self.agent_black)
                 load_master_into_agent(self.agent_white)
@@ -1018,11 +1033,22 @@ class SelfPlayGUI:
             master_files_info = f"{MASTER_MODEL_SAVE_PATH} ({master_model_size}), {MASTER_TABLE_SAVE_PATH} ({master_table_size})"
             total_training_time = get_total_training_time()
             formatted_training_time = format_duration(total_training_time)
+            # Compute additional real training data metrics.
+            if stats_manager.total_games > 0:
+                avg_moves = stats_manager.global_move_count / stats_manager.total_games
+                avg_game_time = stats_manager.accumulated_training_time / stats_manager.total_games
+                games_per_hour = (stats_manager.total_games / (stats_manager.accumulated_training_time / 3600)
+                                  if stats_manager.accumulated_training_time > 0 else 0)
+            else:
+                avg_moves = 0
+                avg_game_time = 0
+                games_per_hour = 0
             info = (f"Mode: AI vs AI (Self-Play)\n"
                     f"Games: {stats_manager.total_games} | Global Moves: {stats_manager.global_move_count}\n"
                     f"Master Files: {master_files_info}\n"
                     f"Training Time: {formatted_training_time}\n"
-                    f"Moves: {self.move_counter}\n"
+                    f"Avg Moves/Game: {avg_moves:.1f} | Avg Time/Game: {avg_game_time:.1f} s\n"
+                    f"Games/Hour: {games_per_hour:.2f}\n"
                     f"White Wins: {stats_manager.wins_white} | Black Wins: {stats_manager.wins_black} | Draws: {stats_manager.draws}\n"
                     f"Precision: {precision_mode}")
             self.ax_info.clear()
@@ -1044,7 +1070,6 @@ class SelfPlayGUI:
 class HumanVsAIGUI:
     def __init__(self, human_is_white=True):
         global training_active_start_time
-        # Initialize the AI agent.
         self.human_is_white = human_is_white
         self.ai_agent = GUIChessAgent(not human_is_white)
         load_master_into_agent(self.ai_agent)
@@ -1072,7 +1097,6 @@ class HumanVsAIGUI:
         self.fig.canvas.manager.set_window_title("Human vs AI (Graphical)")
         self.draw_board()
         self.click_cid = self.fig.canvas.mpl_connect('button_press_event', self.on_click)
-        # Start active training timer if not already running.
         if training_active_start_time is None:
             training_active_start_time = time.time()
         plt.show()
@@ -1224,7 +1248,6 @@ class HumanVsAIGUI:
         self.ai_agent.save_model()
         self.ai_agent.save_table()
         update_master_with_agent(self.ai_agent)
-        # Update training time at game finish.
         update_training_time()
         stats_manager.save_stats()
         print_ascii_stats(stats_manager)
@@ -1263,6 +1286,15 @@ class HumanVsAIGUI:
             master_files_info = f"{MASTER_MODEL_SAVE_PATH} ({master_model_size}), {MASTER_TABLE_SAVE_PATH} ({master_table_size})"
             total_training_time = get_total_training_time()
             formatted_training_time = format_duration(total_training_time)
+            if stats_manager.total_games > 0:
+                avg_moves = stats_manager.global_move_count / stats_manager.total_games
+                avg_game_time = stats_manager.accumulated_training_time / stats_manager.total_games
+                games_per_hour = (stats_manager.total_games / (stats_manager.accumulated_training_time / 3600)
+                                  if stats_manager.accumulated_training_time > 0 else 0)
+            else:
+                avg_moves = 0
+                avg_game_time = 0
+                games_per_hour = 0
             info = (f"Turn: {turn_str}\n"
                     f"Status: {self.status_message}\n"
                     f"Precision: {precision_mode}\n"
@@ -1270,7 +1302,9 @@ class HumanVsAIGUI:
                     f"AI Clock: {self.ai_clock:.1f}\n"
                     f"Moves: {self.move_counter}\n"
                     f"Master Files: {master_files_info}\n"
-                    f"Training Time: {formatted_training_time}")
+                    f"Training Time: {formatted_training_time}\n"
+                    f"Avg Moves/Game: {avg_moves:.1f} | Avg Time/Game: {avg_game_time:.1f} s\n"
+                    f"Games/Hour: {games_per_hour:.2f}")
             self.ax_info.clear()
             self.ax_info.axis('off')
             self.ax_info.text(0, 0.5, info, transform=self.ax_info.transAxes, va='center', ha='left', fontsize=12,

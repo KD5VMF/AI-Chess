@@ -93,10 +93,10 @@ USE_MCTS = True          # Enable Monte Carlo Tree Search for move selection.
 MCTS_SIMULATIONS = 50    # Number of MCTS simulations per move.
 MCTS_EXPLORATION_PARAM = 1.4  # Exploration constant (for UCB in MCTS).
 
-MOVE_TIME_LIMIT = 60.0   # Maximum time (in seconds) allowed per move.
-INITIAL_CLOCK = 300.0    # Starting clock time (in seconds) for each player.
+MOVE_TIME_LIMIT = 180.0   # Maximum time (in seconds) allowed per move.
+INITIAL_CLOCK = 300.0     # Starting clock time (in seconds) for each player.
 
-SAVE_INTERVAL_SECONDS = 60  # Interval (in seconds) for periodic saving.
+SAVE_INTERVAL_SECONDS = 300  # Interval (in seconds) for periodic saving.
 MODEL_SAVE_PATH_WHITE = "white_dqn.pt"      # Path for White agent's model.
 MODEL_SAVE_PATH_BLACK = "black_dqn.pt"      # Path for Black agent's model.
 TABLE_SAVE_PATH_WHITE = "white_transposition.pkl"  # Path for White agent's transposition table.

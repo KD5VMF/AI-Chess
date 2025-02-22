@@ -1,72 +1,55 @@
 """
 ===============================================================================
-         ULTIMATE PERSISTENT REAL-TIME MASTER AI CHESS TRAINING ENGINE
+   ULTIMATE SMART AGGREGATED CHESS AI TRAINING ENGINE
 ===============================================================================
-Title: Ultimate Persistent Real-Time Master AI Chess Training Engine
+Title: Ultimate Smart Aggregated Chess AI Training Engine
 
 About:
-    This engine is a self-learning chess system that continuously trains via
-    self-play and human-versus-AI matches. It employs a Deep Q-Network (DQN) to
-    evaluate board positions and may use Monte Carlo Tree Search (MCTS) for move
-    selection. The engine maintains separate model and transposition table files
-    for White and Black agents, and aggregates their knowledge into master files.
-    
-    A key feature is the tracking of “active training time” – a clock that only
-    advances while the engine is actively training. This accumulated training time,
-    along with other real metrics (such as average moves per game, average time per
-    game, and games per hour), is saved to a stats file and reloaded on startup.
-    Thus, if training is paused for any length of time, the displayed training time
-    remains unchanged.
-    
-    Additional real training data (derived from the saved stats) are computed and
-    displayed, including:
-      • Average Moves per Game
-      • Average Training Time per Game (in seconds)
-      • Games per Hour
-      
-Modes:
-    1. Self-play training (Faster): Runs without board animation for rapid training.
-    2. Self-play training (Slower): Visual AI vs AI self-play with a graphical board.
-    3. Human vs AI (Graphical): Play as a human against the AI (which uses master data).
+    This engine is designed to continuously learn from self-play and human-vs-AI matches while
+    aggregating the best knowledge from two separate agents (White and Black). Each agent
+    trains its own deep neural network model and maintains its own transposition table during play.
+    After every game, the system merges the learned weights and evaluation data from both agents
+    into a master copy. This aggregated master copy is then used to update all new games,
+    ensuring that every participant learns from the combined experience.
 
-Usage:
-    Run the script and select a mode from the main menu. In Human vs AI mode, choose
-    to play as White or Black.
+    Moreover, the engine now displays a clear message indicating the compute mode in use:
+       - "GPU-Tensor (AMP enabled)" if using a CUDA-enabled GPU with mixed precision,
+       - "GPU-CUDA (FP32)" if using a CUDA-enabled GPU in standard FP32 mode, or
+       - "CPU" if no CUDA-enabled GPU is detected.
+    
+    In Human vs AI mode, when a game finishes the engine updates all files and then prompts
+    the user with "Play again? (Y/N):" so that a new game can begin immediately. Additionally,
+    clicking the "Stop" button in any game window causes the program to save all necessary data
+    and close the window properly. The main menu also allows the user to quit the entire program
+    by entering "Q", ensuring a proper save and exit.
 
-Notes:
-    - Errors (such as DPI warnings from Matplotlib) are logged to "error_log.txt" and
-      suppressed from console output.
-    - Detailed inline comments describe the purpose and functionality of each variable,
-      function, and code block.
+    Only errors and key recovery/fix events are logged (with timestamps), so that routine messages
+    do not clutter the log.
 ===============================================================================
 """
 
-# Allow duplicate OpenMP libraries.
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
-# Suppress warnings (e.g. DPI warnings).
 import warnings
 warnings.filterwarnings("ignore", message=".*dpi.*")
 
-# Set up logging so errors are saved to a file.
 import logging
 logging.basicConfig(filename="error_log.txt",
                     level=logging.ERROR,
                     format='%(asctime)s - %(levelname)s - %(message)s',
                     datefmt='%Y-%m-%d %H:%M:%S')
 
-# Import required modules.
-import threading         # For running background tasks.
-import torch             # PyTorch framework for deep learning.
+import threading
+import torch
 import torch.nn as nn
 import torch.optim as optim
 import random
 import numpy as np
-import chess             # python-chess library for board representation.
-import time              # For timing functions (active training, moves, etc).
-import math              # For mathematical calculations.
-import pickle            # For saving/loading objects.
+import chess
+import time
+import math
+import pickle
 import matplotlib.pyplot as plt
 from matplotlib import animation
 from matplotlib.widgets import Button
@@ -74,55 +57,53 @@ from matplotlib.widgets import Button
 # =============================================================================
 # Hyperparameters & Configuration Variables
 # =============================================================================
-STATE_SIZE = 768         # Board tensor size: 12 channels * 8x8 squares.
-MOVE_SIZE = 128          # One-hot move encoding: 64 from-squares + 64 to-squares.
-INPUT_SIZE = STATE_SIZE + MOVE_SIZE  # Total network input vector size.
+STATE_SIZE = 768
+MOVE_SIZE = 128
+INPUT_SIZE = STATE_SIZE + MOVE_SIZE
 
-HIDDEN_SIZE = 12288      # Neurons in hidden layers.
-NUM_HIDDEN_LAYERS = 3    # (Defined in the network structure below.)
-DROPOUT_PROB = 0.0       # Dropout probability (currently unused).
+HIDDEN_SIZE = 12288
+NUM_HIDDEN_LAYERS = 3
+DROPOUT_PROB = 0.0
 
-LEARNING_RATE = 1e-3     # Learning rate for the optimizer.
-BATCH_SIZE = 64          # Batch size for training.
-EPOCHS_PER_GAME = 3      # Number of epochs to train after each game.
-EPS_START = 1.0          # Initial exploration rate.
-EPS_END = 0.05           # Minimum exploration rate.
-EPS_DECAY = 0.9999       # Decay factor for exploration per move.
+LEARNING_RATE = 1e-3
+BATCH_SIZE = 64
+EPOCHS_PER_GAME = 3
+EPS_START = 1.0
+EPS_END = 0.05
+EPS_DECAY = 0.9999
 
-USE_MCTS = True          # Enable Monte Carlo Tree Search for move selection.
-MCTS_SIMULATIONS = 50    # Number of MCTS simulations per move.
-MCTS_EXPLORATION_PARAM = 1.4  # Exploration constant (for UCB in MCTS).
+USE_MCTS = True
+MCTS_SIMULATIONS = 50
+MCTS_EXPLORATION_PARAM = 1.4
 
-MOVE_TIME_LIMIT = 180.0   # Maximum time (in seconds) allowed per move.
-INITIAL_CLOCK = 300.0     # Starting clock time (in seconds) for each player.
+MOVE_TIME_LIMIT = 180.0
+INITIAL_CLOCK = 300.0
 
-SAVE_INTERVAL_SECONDS = 300  # Interval (in seconds) for periodic saving.
-MODEL_SAVE_PATH_WHITE = "white_dqn.pt"      # Path for White agent's model.
-MODEL_SAVE_PATH_BLACK = "black_dqn.pt"      # Path for Black agent's model.
-TABLE_SAVE_PATH_WHITE = "white_transposition.pkl"  # Path for White agent's transposition table.
-TABLE_SAVE_PATH_BLACK = "black_transposition.pkl"  # Path for Black agent's transposition table.
-STATS_FILE = "stats.pkl"                    # File to store training statistics.
+SAVE_INTERVAL_SECONDS = 300
+MODEL_SAVE_PATH_WHITE = "white_dqn.pt"
+MODEL_SAVE_PATH_BLACK = "black_dqn.pt"
+TABLE_SAVE_PATH_WHITE = "white_transposition.pkl"
+TABLE_SAVE_PATH_BLACK = "black_transposition.pkl"
+STATS_FILE = "stats.pkl"
 
-MASTER_MODEL_SAVE_PATH = "master_dqn.pt"    # Path for aggregated master model.
-MASTER_TABLE_SAVE_PATH = "master_transposition.pkl"  # Path for aggregated master table.
+MASTER_MODEL_SAVE_PATH = "master_dqn.pt"
+MASTER_TABLE_SAVE_PATH = "master_transposition.pkl"
 
-use_amp = False          # Mixed precision flag (set later based on GPU capabilities).
+use_amp = False
 
 # =============================================================================
-# Global Variables for Master Copy (stored in RAM)
+# Global Variables for Master Copy (in RAM)
 # =============================================================================
 MASTER_MODEL_RAM = None  
 MASTER_TABLE_RAM = {}
 
 # =============================================================================
-# Global variable for tracking active training time.
-# This variable stores the timestamp when training is active.
+# Global Variable for Tracking Active Training Time
 # =============================================================================
 training_active_start_time = None
 
 # =============================================================================
-# Helper Function: Format Duration
-# Converts seconds into a human-readable string (Years, Months, Days, Hours, Minutes, Seconds).
+# Helper Functions
 # =============================================================================
 def format_duration(total_seconds):
     years = total_seconds // 31536000
@@ -137,10 +118,6 @@ def format_duration(total_seconds):
     seconds = total_seconds % 60
     return f"{int(years)}y {int(months)}m {int(days)}d {int(hours)}h {int(minutes)}m {int(seconds)}s"
 
-# =============================================================================
-# Helper Function: Format File Size
-# Converts file size in bytes to a human-readable format (e.g., KB, MB, GB).
-# =============================================================================
 def format_file_size(size_bytes):
     if size_bytes == 0:
         return "0 B"
@@ -151,19 +128,21 @@ def format_file_size(size_bytes):
         index += 1
     return f"{size_bytes:,.1f} {units[index]}"
 
-# =============================================================================
-# Global Unicode Mapping for Chess Pieces
-# =============================================================================
+def get_training_mode():
+    if device.type == "cuda":
+        if use_amp:
+            return "GPU-Tensor (AMP enabled)"
+        else:
+            return "GPU-CUDA (FP32)"
+    else:
+        return "CPU"
+
 piece_unicode = {
     'P': '♙', 'N': '♘', 'B': '♗', 'R': '♖', 'Q': '♕', 'K': '♔',
     'p': '♟', 'n': '♞', 'b': '♝', 'r': '♜', 'q': '♛', 'k': '♚'
 }
 piece_unicode_gui = piece_unicode.copy()
 
-# =============================================================================
-# Global Famous Moves Database
-# Provides bonus scores for recognized moves.
-# =============================================================================
 FAMOUS_MOVES = {
     "Qf6": 100, "Bd6": 120, "Rxd4": 110, "Nf4": 90, "Qg2": 130,
     "Qh5": 70, "Bxh6": 110, "Rxf7": 140, "Bxf7+": 150, "Nxd5": 80,
@@ -175,9 +154,6 @@ FAMOUS_MOVES = {
 
 # =============================================================================
 # StatsManager Class
-# Loads and saves training statistics including:
-#   - wins, draws, total games, global move count, and
-#   - accumulated active training time (only incrementing when training is active).
 # =============================================================================
 class StatsManager:
     def __init__(self, filename=STATS_FILE):
@@ -195,7 +171,6 @@ class StatsManager:
                 self.total_games = data.get("total_games", 0)
                 self.global_move_count = data.get("global_move_count", 0)
                 self.accumulated_training_time = data.get("accumulated_training_time", 0)
-                print("Stats loaded successfully.")
             except Exception as e:
                 logging.error(f"Error loading stats: {e}. Initializing new stats.")
                 self.wins_white = 0
@@ -224,7 +199,6 @@ class StatsManager:
         try:
             with open(self.filename, "wb") as f:
                 pickle.dump(data, f)
-            print("Stats saved successfully.")
         except Exception as e:
             logging.error(f"Error saving stats: {e}")
 
@@ -244,11 +218,6 @@ class StatsManager:
 
 stats_manager = StatsManager()
 
-# =============================================================================
-# Helper Function: Update Training Time
-# When training is active, this function adds the elapsed active time to the
-# accumulated training time and resets the active timer.
-# =============================================================================
 def update_training_time():
     global training_active_start_time
     if training_active_start_time is not None:
@@ -256,25 +225,12 @@ def update_training_time():
         stats_manager.accumulated_training_time += elapsed
         training_active_start_time = time.time()
 
-# =============================================================================
-# Helper Function: Get Total Training Time
-# Computes the total training time as the accumulated time plus the current
-# active period (if training is currently running).
-# =============================================================================
 def get_total_training_time():
     if training_active_start_time is not None:
         return stats_manager.accumulated_training_time + (time.time() - training_active_start_time)
     else:
         return stats_manager.accumulated_training_time
 
-# =============================================================================
-# Helper Function: Print Formatted Training Statistics (ASCII)
-# Displays real training data including:
-#   • Total games, wins, draws, global moves
-#   • Master file names and their sizes
-#   • Accumulated training time (active only)
-#   • Average moves per game, average time per game (in seconds), and games per hour
-# =============================================================================
 def print_ascii_stats(stats):
     os.system('cls' if os.name == 'nt' else 'clear')
     print("=" * 60)
@@ -293,10 +249,9 @@ def print_ascii_stats(stats):
           f"{MASTER_TABLE_SAVE_PATH} ({master_table_size})")
     total_training_time = get_total_training_time()
     print(f" Training Time: {format_duration(total_training_time)}")
-    # Compute additional real training data metrics.
     if stats.total_games > 0:
         avg_moves = stats.global_move_count / stats.total_games
-        avg_game_time = stats.accumulated_training_time / stats.total_games  # in seconds
+        avg_game_time = stats.accumulated_training_time / stats.total_games
         games_per_hour = (stats.total_games / (stats.accumulated_training_time / 3600)
                           if stats.accumulated_training_time > 0 else 0)
     else:
@@ -306,6 +261,7 @@ def print_ascii_stats(stats):
     print(f" Avg Moves/Game: {avg_moves:.1f}")
     print(f" Avg Time/Game:  {avg_game_time:.1f} s")
     print(f" Games/Hour:     {games_per_hour:.2f}")
+    print(f" Training on:    {get_training_mode()}")
     print("=" * 60)
 
 # =============================================================================
@@ -340,28 +296,24 @@ print(f"Mixed precision (AMP) enabled: {use_amp}")
 
 # =============================================================================
 # Neural Network (ChessDQN) Class
-# A simple feedforward network to evaluate chess board positions.
 # =============================================================================
 class ChessDQN(nn.Module):
     def __init__(self, input_size, hidden_size):
         super(ChessDQN, self).__init__()
-        # Two hidden layers with ReLU activations.
         self.net = nn.Sequential(
             nn.Linear(input_size, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
-            nn.Linear(hidden_size, 1)  # Single output evaluation.
+            nn.Linear(hidden_size, 1)
         )
     def forward(self, x):
         return self.net(x)
 
 # =============================================================================
 # Board and Move Encoding Functions
-# Converts a chess.Board object to a flattened tensor and encodes moves.
 # =============================================================================
 def board_to_tensor(board):
-    # Map piece types to channels: first 6 channels for White, next 6 for Black.
     piece_to_channel = {
         chess.PAWN: 0, chess.KNIGHT: 1, chess.BISHOP: 2,
         chess.ROOK: 3, chess.QUEEN: 4, chess.KING: 5
@@ -378,7 +330,6 @@ def board_to_tensor(board):
     return arr.flatten()
 
 def move_to_tensor(move):
-    # One-hot encode the move (64 for from-square, 64 for to-square).
     v = np.zeros(MOVE_SIZE, dtype=np.float32)
     v[move.from_square] = 1.0
     v[64 + move.to_square] = 1.0
@@ -386,7 +337,6 @@ def move_to_tensor(move):
 
 # =============================================================================
 # MCTS Node and Search Functions
-# Implements a basic Monte Carlo Tree Search for move selection.
 # =============================================================================
 class MCTSNode:
     def __init__(self, board, parent=None, move=None):
@@ -431,7 +381,6 @@ def mcts_search(root_board, neural_agent, num_simulations=MCTS_SIMULATIONS):
 
 # =============================================================================
 # Placeholder for minimax_with_time
-# Returns a random legal move; can be replaced with a proper minimax algorithm.
 # =============================================================================
 def minimax_with_time(board, depth, alpha, beta, maximizing, agent_white, agent_black, end_time):
     legal_moves = list(board.legal_moves)
@@ -440,8 +389,7 @@ def minimax_with_time(board, depth, alpha, beta, maximizing, agent_white, agent_
     return 0, random.choice(legal_moves)
 
 # =============================================================================
-# Master Merge Functions
-# Merge model weights and transposition tables from two agents into a master copy.
+# Master Merge and Recovery Functions (Error logs only)
 # =============================================================================
 def merge_state_dicts(state_dict1, state_dict2):
     merged = {}
@@ -462,43 +410,47 @@ def update_master_in_memory(agent_white, agent_black):
     global MASTER_MODEL_RAM, MASTER_TABLE_RAM
     white_state = agent_white.policy_net.state_dict()
     black_state = agent_black.policy_net.state_dict()
-    MASTER_MODEL_RAM = merge_state_dicts(white_state, black_state)
+    new_master_state = merge_state_dicts(white_state, black_state)
+    if MASTER_MODEL_RAM is not None:
+         MASTER_MODEL_RAM = merge_state_dicts(MASTER_MODEL_RAM, new_master_state)
+    else:
+         MASTER_MODEL_RAM = new_master_state
     with agent_white.table_lock:
-        white_table = agent_white.transposition_table.copy()
+         white_table = agent_white.transposition_table.copy()
     with agent_black.table_lock:
-        black_table = agent_black.transposition_table.copy()
-    MASTER_TABLE_RAM = merge_transposition_tables(white_table, black_table)
-    print("Master copy (RAM) updated.")
+         black_table = agent_black.transposition_table.copy()
+    new_master_table = merge_transposition_tables(white_table, black_table)
+    if MASTER_TABLE_RAM:
+         MASTER_TABLE_RAM = merge_transposition_tables(MASTER_TABLE_RAM, new_master_table)
+    else:
+         MASTER_TABLE_RAM = new_master_table
 
 def update_master_with_agent(agent):
     global MASTER_MODEL_RAM, MASTER_TABLE_RAM
     current_state = agent.policy_net.state_dict()
-    if MASTER_MODEL_RAM is None:
-        MASTER_MODEL_RAM = current_state
+    if MASTER_MODEL_RAM is not None:
+         MASTER_MODEL_RAM = merge_state_dicts(MASTER_MODEL_RAM, current_state)
     else:
-        MASTER_MODEL_RAM = merge_state_dicts(MASTER_MODEL_RAM, current_state)
+         MASTER_MODEL_RAM = current_state
     with agent.table_lock:
-        current_table = agent.transposition_table.copy()
+         current_table = agent.transposition_table.copy()
     if MASTER_TABLE_RAM:
-        MASTER_TABLE_RAM = merge_transposition_tables(MASTER_TABLE_RAM, current_table)
+         MASTER_TABLE_RAM = merge_transposition_tables(MASTER_TABLE_RAM, current_table)
     else:
-        MASTER_TABLE_RAM = current_table
+         MASTER_TABLE_RAM = current_table
     flush_master_to_disk()
     load_master_into_agent(agent)
-    print("Master updated with new agent data.")
 
 def flush_master_to_disk():
     global MASTER_MODEL_RAM, MASTER_TABLE_RAM
     if MASTER_MODEL_RAM is not None:
         try:
             torch.save(MASTER_MODEL_RAM, MASTER_MODEL_SAVE_PATH)
-            print(f"Master model flushed to disk at {MASTER_MODEL_SAVE_PATH}")
         except Exception as e:
             logging.error(f"Error flushing master model to disk: {e}")
     try:
         with open(MASTER_TABLE_SAVE_PATH, "wb") as f:
             pickle.dump(MASTER_TABLE_RAM, f)
-        print(f"Master transposition table flushed to disk with {len(MASTER_TABLE_RAM)} entries.")
     except Exception as e:
         logging.error(f"Error flushing master table to disk: {e}")
 
@@ -507,7 +459,6 @@ def load_master_into_agent(agent):
     if MASTER_MODEL_RAM is not None:
         try:
             agent.policy_net.load_state_dict(MASTER_MODEL_RAM)
-            print(f"{agent.name}: Loaded master model from RAM copy.")
         except Exception as e:
             logging.error(f"Error loading RAM master model for {agent.name}: {e}")
     else:
@@ -515,13 +466,11 @@ def load_master_into_agent(agent):
             try:
                 master_state = torch.load(MASTER_MODEL_SAVE_PATH, map_location=device)
                 agent.policy_net.load_state_dict(master_state)
-                print(f"{agent.name}: Loaded master model from disk.")
             except Exception as e:
                 logging.error(f"Error loading master model from disk for {agent.name}: {e}")
     if MASTER_TABLE_RAM:
         try:
             agent.transposition_table = MASTER_TABLE_RAM.copy()
-            print(f"{agent.name}: Loaded master transposition table from RAM copy.")
         except Exception as e:
             logging.error(f"Error loading master table from RAM for {agent.name}: {e}")
     else:
@@ -529,13 +478,93 @@ def load_master_into_agent(agent):
             try:
                 with open(MASTER_TABLE_SAVE_PATH, "rb") as f:
                     agent.transposition_table = pickle.load(f)
-                print(f"{agent.name}: Loaded master transposition table from disk.")
             except Exception as e:
                 logging.error(f"Error loading master transposition table from disk for {agent.name}: {e}")
 
+def recover_master_model():
+    global MASTER_MODEL_RAM
+    white_model = None
+    black_model = None
+    if os.path.exists(MODEL_SAVE_PATH_WHITE):
+         try:
+             white_model = torch.load(MODEL_SAVE_PATH_WHITE, map_location=device)
+         except Exception as e:
+             logging.error(f"Recover master: Error loading white model: {e}")
+    if os.path.exists(MODEL_SAVE_PATH_BLACK):
+         try:
+             black_model = torch.load(MODEL_SAVE_PATH_BLACK, map_location=device)
+         except Exception as e:
+             logging.error(f"Recover master: Error loading black model: {e}")
+    if white_model is not None and black_model is not None:
+         MASTER_MODEL_RAM = merge_state_dicts(white_model, black_model)
+         try:
+             torch.save(MASTER_MODEL_RAM, MASTER_MODEL_SAVE_PATH)
+         except Exception as e:
+             logging.error(f"Recover master: Error saving recovered master model: {e}")
+         logging.error("Fix applied: Master model recovered successfully.")
+    else:
+         MASTER_MODEL_RAM = None
+         logging.error("Fix failed: Master model recovery unsuccessful.")
+
+def recover_master_table():
+    global MASTER_TABLE_RAM
+    white_table = None
+    black_table = None
+    if os.path.exists(TABLE_SAVE_PATH_WHITE):
+         try:
+             with open(TABLE_SAVE_PATH_WHITE, "rb") as f:
+                 white_table = pickle.load(f)
+         except Exception as e:
+             logging.error(f"Recover master: Error loading white table: {e}")
+    if os.path.exists(TABLE_SAVE_PATH_BLACK):
+         try:
+             with open(TABLE_SAVE_PATH_BLACK, "rb") as f:
+                 black_table = pickle.load(f)
+         except Exception as e:
+             logging.error(f"Recover master: Error loading black table: {e}")
+    if white_table is not None and black_table is not None:
+         MASTER_TABLE_RAM = merge_transposition_tables(white_table, black_table)
+         try:
+             with open(MASTER_TABLE_SAVE_PATH, "wb") as f:
+                 pickle.dump(MASTER_TABLE_RAM, f)
+         except Exception as e:
+             logging.error(f"Recover master: Error saving recovered master table: {e}")
+         logging.error("Fix applied: Master transposition table recovered successfully.")
+    else:
+         MASTER_TABLE_RAM = {}
+         logging.error("Fix failed: Master table recovery unsuccessful.")
+
+def initial_master_sync():
+    global MASTER_MODEL_RAM, MASTER_TABLE_RAM
+    if os.path.exists(MASTER_MODEL_SAVE_PATH):
+         try:
+             MASTER_MODEL_RAM = torch.load(MASTER_MODEL_SAVE_PATH, map_location=device)
+         except Exception as e:
+             logging.error(f"Initial sync: Error loading master model: {e}")
+             try:
+                 os.remove(MASTER_MODEL_SAVE_PATH)
+             except Exception as re:
+                 logging.error(f"Initial sync: Error removing corrupt master model file: {re}")
+             recover_master_model()
+    else:
+         logging.error("Initial sync: No master model file found. Recovery attempted from agents.")
+
+    if os.path.exists(MASTER_TABLE_SAVE_PATH):
+         try:
+             with open(MASTER_TABLE_SAVE_PATH, "rb") as f:
+                 MASTER_TABLE_RAM = pickle.load(f)
+         except Exception as e:
+             logging.error(f"Initial sync: Error loading master table: {e}")
+             try:
+                 os.remove(MASTER_TABLE_SAVE_PATH)
+             except Exception as re:
+                 logging.error(f"Initial sync: Error removing corrupt master table file: {re}")
+             recover_master_table()
+    else:
+         logging.error("Initial sync: No master table file found. Recovery attempted from agents.")
+
 # =============================================================================
 # Background Saver Thread
-# Periodically saves models, transposition tables, stats, and flushes the master copy.
 # =============================================================================
 def background_saver(agent_white, agent_black, stats_manager):
     while True:
@@ -547,13 +576,11 @@ def background_saver(agent_white, agent_black, stats_manager):
             agent_black.save_transposition_table()
             stats_manager.save_stats()
             flush_master_to_disk()
-            print("Background saver: Flushed master copy and saved agent files.")
         except Exception as e:
             logging.error(f"Background saver error: {e}")
 
 # =============================================================================
 # ChessAgent Class (for Self-Play)
-# Implements an AI agent for self-play training.
 # =============================================================================
 class ChessAgent:
     def __init__(self, name, model_path, table_path):
@@ -561,32 +588,32 @@ class ChessAgent:
         self.policy_net = ChessDQN(INPUT_SIZE, HIDDEN_SIZE).to(device)
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=LEARNING_RATE)
         self.criterion = nn.MSELoss()
-        self.epsilon = EPS_START  # Exploration rate.
+        self.epsilon = EPS_START
         self.steps = 0
-        self.clock = INITIAL_CLOCK  # Player's clock.
-        self.model_path = model_path  # Model save/load path.
-        self.table_path = table_path  # Transposition table save/load path.
-        self.transposition_table = {}  # Cache for board evaluations.
-        self.table_lock = threading.Lock()  # For thread-safe access.
-        self.game_memory = []  # Memory for training examples.
+        self.clock = INITIAL_CLOCK
+        self.model_path = model_path
+        self.table_path = table_path
+        self.transposition_table = {}
+        self.table_lock = threading.Lock()
+        self.game_memory = []
         if os.path.exists(self.model_path):
             try:
                 self.policy_net.load_state_dict(torch.load(self.model_path, map_location=device))
-                print(f"{self.name}: Loaded model from {self.model_path}")
             except Exception as e:
                 logging.error(f"Error loading model from {self.model_path}: {e}. Initializing new model.")
         if os.path.exists(self.table_path):
             try:
                 with open(self.table_path, "rb") as f:
                     self.transposition_table = pickle.load(f)
-                print(f"{self.name}: Loaded transposition table with {len(self.transposition_table)} entries.")
             except Exception as e:
-                logging.error(f"Error loading transposition table from {self.table_path}: {e}. Initializing empty table.")
-                self.transposition_table = {}
+                logging.error(f"Error loading transposition table from {self.table_path}: {e}. Attempting recovery.")
+                if MASTER_TABLE_RAM:
+                    self.transposition_table = MASTER_TABLE_RAM.copy()
+                else:
+                    self.transposition_table = {}
 
     def save_model(self):
         torch.save(self.policy_net.state_dict(), self.model_path)
-        print(f"{self.name}: Model saved to {self.model_path}")
 
     def save_transposition_table(self):
         with self.table_lock:
@@ -594,7 +621,6 @@ class ChessAgent:
         try:
             with open(self.table_path, "wb") as f:
                 pickle.dump(table_copy, f)
-            print(f"{self.name}: Transposition table saved with {len(table_copy)} entries.")
         except Exception as e:
             logging.error(f"Error saving transposition table for {self.name}: {e}")
 
@@ -705,7 +731,6 @@ class ChessAgent:
 
 # =============================================================================
 # GUIChessAgent Class (for Human vs AI)
-# Loads the master model and transposition table to serve as the AI opponent.
 # =============================================================================
 class GUIChessAgent:
     def __init__(self, ai_is_white):
@@ -724,21 +749,29 @@ class GUIChessAgent:
             try:
                 master_state = torch.load(MASTER_MODEL_SAVE_PATH, map_location=device)
                 self.policy_net.load_state_dict(master_state)
-                print("Human-vs-AI: Loaded master model from disk into AI agent.")
             except Exception as e:
                 logging.error(f"Error loading master model into Human-vs-AI agent: {e}")
         if os.path.exists(MASTER_TABLE_SAVE_PATH):
             try:
                 with open(MASTER_TABLE_SAVE_PATH, "rb") as f:
                     self.transposition_table = pickle.load(f)
-                print("Human-vs-AI: Loaded master transposition table from disk into AI agent.")
             except Exception as e:
                 logging.error(f"Error loading master transposition table into Human-vs-AI agent: {e}")
                 self.transposition_table = {}
+        if os.path.exists(self.table_path):
+            try:
+                with open(self.table_path, "rb") as f:
+                    local_table = pickle.load(f)
+                self.transposition_table.update(local_table)
+            except Exception as e:
+                logging.error(f"Error loading local transposition table from {self.table_path}: {e}. Attempting recovery.")
+                if MASTER_TABLE_RAM:
+                    self.transposition_table = MASTER_TABLE_RAM.copy()
+                else:
+                    self.transposition_table = {}
 
     def save_model(self):
         torch.save(self.policy_net.state_dict(), self.model_path)
-        print(f"AI model saved to {self.model_path}")
 
     def save_table(self):
         with self.table_lock:
@@ -746,7 +779,6 @@ class GUIChessAgent:
         try:
             with open(self.table_path, "wb") as f:
                 pickle.dump(table_copy, f)
-            print(f"AI table saved to {self.table_path} with {len(table_copy)} entries.")
         except Exception as e:
             logging.error(f"Error saving AI table: {e}")
 
@@ -838,15 +870,12 @@ class GUIChessAgent:
 # =============================================================================
 def self_play_training_faster():
     global training_active_start_time
-    # Initialize agents.
     agent_white = ChessAgent("white", MODEL_SAVE_PATH_WHITE, TABLE_SAVE_PATH_WHITE)
     agent_black = ChessAgent("black", MODEL_SAVE_PATH_BLACK, TABLE_SAVE_PATH_BLACK)
     load_master_into_agent(agent_white)
     load_master_into_agent(agent_black)
-    # Start background saver thread.
     saver_thread = threading.Thread(target=background_saver, args=(agent_white, agent_black, stats_manager), daemon=True)
     saver_thread.start()
-    # Start active training timer if not already running.
     if training_active_start_time is None:
         training_active_start_time = time.time()
     while True:
@@ -868,10 +897,7 @@ def self_play_training_faster():
                 agent_white.clock -= elapsed
                 agent_black.clock -= elapsed
                 stats_manager.global_move_count += 1
-
-            # At game end, update the active training time.
             update_training_time()
-
             if board.is_game_over():
                 res = board.result()
                 stats_manager.record_result(res)
@@ -884,7 +910,6 @@ def self_play_training_faster():
                 else:
                     agent_white.train_after_game(0)
                     agent_black.train_after_game(0)
-
             update_master_in_memory(agent_white, agent_black)
             print_ascii_stats(stats_manager)
         except KeyboardInterrupt:
@@ -898,7 +923,6 @@ def self_play_training_faster():
 class SelfPlayGUI:
     def __init__(self):
         global training_active_start_time
-        # Initialize agents.
         self.agent_white = ChessAgent("white", MODEL_SAVE_PATH_WHITE, TABLE_SAVE_PATH_WHITE)
         self.agent_black = ChessAgent("black", MODEL_SAVE_PATH_BLACK, TABLE_SAVE_PATH_BLACK)
         load_master_into_agent(self.agent_white)
@@ -923,7 +947,6 @@ class SelfPlayGUI:
         self.fig.canvas.manager.set_window_title("AI vs AI (Self-Play)")
         self.draw_board()
         self.ani = animation.FuncAnimation(self.fig, self.update, interval=1000, blit=False, cache_frame_data=False)
-        # Start active training timer if not already running.
         if training_active_start_time is None:
             training_active_start_time = time.time()
         plt.show()
@@ -939,10 +962,8 @@ class SelfPlayGUI:
         if hasattr(self, 'ani') and self.ani:
             self.ani.event_source.stop()
             self.ani = None
-        self.fig.canvas.mpl_disconnect(self.cid)
         self.save_callback(event)
         plt.close(self.fig)
-        print("Game stopped.")
 
     def save_callback(self, event):
         self.agent_white.save_model()
@@ -954,7 +975,6 @@ class SelfPlayGUI:
 
     def on_key_press(self, event):
         if event.key.lower() == "ctrl+q":
-            print("CTRL+Q pressed. Saving and quitting...")
             self.save_callback(event)
             plt.close(self.fig)
 
@@ -1033,7 +1053,6 @@ class SelfPlayGUI:
             master_files_info = f"{MASTER_MODEL_SAVE_PATH} ({master_model_size}), {MASTER_TABLE_SAVE_PATH} ({master_table_size})"
             total_training_time = get_total_training_time()
             formatted_training_time = format_duration(total_training_time)
-            # Compute additional real training data metrics.
             if stats_manager.total_games > 0:
                 avg_moves = stats_manager.global_move_count / stats_manager.total_games
                 avg_game_time = stats_manager.accumulated_training_time / stats_manager.total_games
@@ -1043,14 +1062,17 @@ class SelfPlayGUI:
                 avg_moves = 0
                 avg_game_time = 0
                 games_per_hour = 0
-            info = (f"Mode: AI vs AI (Self-Play)\n"
-                    f"Games: {stats_manager.total_games} | Global Moves: {stats_manager.global_move_count}\n"
+            info = (f"Turn: {'White' if self.board.turn else 'Black'}\n"
+                    f"Status: {self.status_message}\n"
+                    f"Precision: {precision_mode}\n"
+                    f"Training on: {get_training_mode()}\n"
+                    f"Human Clock: {self.human_clock:.1f}\n"
+                    f"AI Clock: {self.ai_clock:.1f}\n"
+                    f"Moves: {self.move_counter}\n"
                     f"Master Files: {master_files_info}\n"
                     f"Training Time: {formatted_training_time}\n"
                     f"Avg Moves/Game: {avg_moves:.1f} | Avg Time/Game: {avg_game_time:.1f} s\n"
-                    f"Games/Hour: {games_per_hour:.2f}\n"
-                    f"White Wins: {stats_manager.wins_white} | Black Wins: {stats_manager.wins_black} | Draws: {stats_manager.draws}\n"
-                    f"Precision: {precision_mode}")
+                    f"Games/Hour: {games_per_hour:.2f}")
             self.ax_info.clear()
             self.ax_info.axis('off')
             self.ax_info.text(0, 0.5, info, transform=self.ax_info.transAxes, va='center', ha='left', fontsize=12,
@@ -1112,11 +1134,8 @@ class HumanVsAIGUI:
         if hasattr(self, 'ani') and self.ani:
             self.ani.event_source.stop()
             self.ani = None
-        self.fig.canvas.mpl_disconnect(self.cid)
-        self.fig.canvas.mpl_disconnect(self.click_cid)
         self.save_callback(event)
         plt.close(self.fig)
-        print("Game stopped.")
 
     def save_callback(self, event):
         self.ai_agent.save_model()
@@ -1126,7 +1145,6 @@ class HumanVsAIGUI:
 
     def on_key_press(self, event):
         if event.key.lower() == "ctrl+q":
-            print("CTRL+Q pressed. Saving and quitting...")
             self.save_callback(event)
             plt.close(self.fig)
 
@@ -1252,6 +1270,15 @@ class HumanVsAIGUI:
         stats_manager.save_stats()
         print_ascii_stats(stats_manager)
         print(f"Human vs AI Stats: {stats_manager}")
+        play_again = input("Play again? (Y/N): ").strip().lower()
+        if play_again == 'y':
+            self.board = chess.Board()
+            self.move_counter = 0
+            self.current_game_start_time = time.time()
+            self.status_message = "Your move" if self.human_is_white else "AI is thinking..."
+            self.draw_board()
+        else:
+            plt.close(self.fig)
 
     def draw_board(self):
         try:
@@ -1277,7 +1304,6 @@ class HumanVsAIGUI:
             self.ax_board.set_xticks([])
             self.ax_board.set_yticks([])
             self.ax_board.set_aspect('equal')
-            turn_str = "White" if self.board.turn else "Black"
             precision_mode = "Tensor Cores (AMP)" if use_amp else "CUDA FP32"
             master_model_size = (format_file_size(os.path.getsize(MASTER_MODEL_SAVE_PATH))
                                  if os.path.exists(MASTER_MODEL_SAVE_PATH) else "N/A")
@@ -1295,9 +1321,10 @@ class HumanVsAIGUI:
                 avg_moves = 0
                 avg_game_time = 0
                 games_per_hour = 0
-            info = (f"Turn: {turn_str}\n"
+            info = (f"Turn: {'White' if self.board.turn else 'Black'}\n"
                     f"Status: {self.status_message}\n"
                     f"Precision: {precision_mode}\n"
+                    f"Training on: {get_training_mode()}\n"
                     f"Human Clock: {self.human_clock:.1f}\n"
                     f"AI Clock: {self.ai_clock:.1f}\n"
                     f"Moves: {self.move_counter}\n"
@@ -1319,25 +1346,32 @@ class HumanVsAIGUI:
             logging.error(f"Error during draw_board: {e}")
 
 # =============================================================================
-# Main Menu
+# Main Menu (with Quit option)
 # =============================================================================
 def main():
-    print("Welcome back! Current saved stats are:")
-    print_ascii_stats(stats_manager)
-    print("\nSelect a mode:")
-    print("[1] Self-play training (Faster) - no board animation")
-    print("[2] Self-play training (Slower) - AI vs AI with visual")
-    print("[3] Human vs AI (Graphical)")
-    choice = input("Enter 1, 2, or 3: ").strip()
-    if choice == '1':
-        self_play_training_faster()
-    elif choice == '2':
-        SelfPlayGUI()
-    else:
-        color_input = input("Play as White (w) or Black (b)? [w/b]: ").strip().lower()
-        if color_input not in ['w', 'b']:
-            color_input = 'w'
-        HumanVsAIGUI(human_is_white=(color_input == 'w'))
+    initial_master_sync()
+    while True:
+        print("Welcome back! Current saved stats are:")
+        print_ascii_stats(stats_manager)
+        print("\nSelect a mode:")
+        print("[1] Self-play training (Faster) - no board animation")
+        print("[2] Self-play training (Slower) - AI vs AI with visual")
+        print("[3] Human vs AI (Graphical)")
+        print("[Q] Quit")
+        choice = input("Enter 1, 2, 3, or Q: ").strip().lower()
+        if choice == 'q':
+            stats_manager.save_stats()
+            print("Exiting program.")
+            break
+        elif choice == '1':
+            self_play_training_faster()
+        elif choice == '2':
+            SelfPlayGUI()
+        elif choice == '3':
+            color_input = input("Play as White (w) or Black (b)? [w/b]: ").strip().lower()
+            if color_input not in ['w', 'b']:
+                color_input = 'w'
+            HumanVsAIGUI(human_is_white=(color_input == 'w'))
 
 if __name__ == "__main__":
     main()

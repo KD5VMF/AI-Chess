@@ -1,30 +1,32 @@
 """
 ===============================================================================
-   ULTIMATE SMART AGGREGATED CHESS AI TRAINING ENGINE
+   ULTIMATE HYBRID CPU/GPU-OPTIMIZED CHESS AI TRAINING ENGINE
 ===============================================================================
-Title: Ultimate Smart Aggregated Chess AI Training Engine
+Title: Ultimate Hybrid CPU/GPU-Optimized Chess AI Training Engine
 
 About:
-    This engine is designed to continuously learn from self-play and human-vs-AI matches while
-    aggregating the best knowledge from two separate agents (White and Black). Each agent
-    trains its own deep neural network model and maintains its own transposition table during play.
-    After every game, the system merges the learned weights and evaluation data from both agents
-    into a master copy. This aggregated master copy is then used to update all new games,
-    ensuring that every participant learns from the combined experience.
+    This engine continuously learns from self-play and human-vs-AI matches while
+    aggregating the best knowledge from two agents (White and Black). Each agent
+    trains its own deep neural network model and maintains its own transposition table
+    during play. After every game, the system merges the learned weights and evaluation
+    data from both agents into a master copy. This aggregated master copy is then used to
+    update all new games, ensuring that the combined experience is preserved.
 
-    Moreover, the engine now displays a clear message indicating the compute mode in use:
-       - "GPU-Tensor (AMP enabled)" if using a CUDA-enabled GPU with mixed precision,
-       - "GPU-CUDA (FP32)" if using a CUDA-enabled GPU in standard FP32 mode, or
-       - "CPU" if no CUDA-enabled GPU is detected.
-    
+    The program is designed to work in both GPU and CPU environments. When a CUDA-enabled
+    GPU is available, it can operate in standard FP32 mode ("GPU-CUDA") or, if supported,
+    in mixed precision mode using Tensor Cores ("GPU-Tensor"). When running on the CPU,
+    the program automatically sets the number of threads to match your system’s core count.
+    In that case, the training info will display the number of threads being used along with
+    the total available cores.
+
     In Human vs AI mode, when a game finishes the engine updates all files and then prompts
-    the user with "Play again? (Y/N):" so that a new game can begin immediately. Additionally,
-    clicking the "Stop" button in any game window causes the program to save all necessary data
-    and close the window properly. The main menu also allows the user to quit the entire program
+    the user with "Play again? (Y/N):" so a new game can begin immediately. Also, clicking
+    the "Stop" button in any game window causes the program to save all necessary data and
+    close the window properly. The main menu also allows the user to quit the entire program
     by entering "Q", ensuring a proper save and exit.
 
-    Only errors and key recovery/fix events are logged (with timestamps), so that routine messages
-    do not clutter the log.
+    Only errors and key recovery/fix events are logged (with timestamps), so routine
+    informational messages are not recorded.
 ===============================================================================
 """
 
@@ -57,12 +59,12 @@ from matplotlib.widgets import Button
 # =============================================================================
 # Hyperparameters & Configuration Variables
 # =============================================================================
-STATE_SIZE = 768
-MOVE_SIZE = 128
+STATE_SIZE = 768          # 12 channels x 8x8 board representation.
+MOVE_SIZE = 128           # One-hot encoding for moves.
 INPUT_SIZE = STATE_SIZE + MOVE_SIZE
 
-HIDDEN_SIZE = 12288
-NUM_HIDDEN_LAYERS = 3
+HIDDEN_SIZE = 12288       # Neurons in hidden layers.
+NUM_HIDDEN_LAYERS = 3     # Number of hidden layers.
 DROPOUT_PROB = 0.0
 
 LEARNING_RATE = 1e-3
@@ -131,12 +133,25 @@ def format_file_size(size_bytes):
 def get_training_mode():
     if device.type == "cuda":
         if use_amp:
-            return "GPU-Tensor (AMP enabled)"
+            return f"GPU-Tensor (AMP enabled) - {torch.cuda.get_device_name(device)}"
         else:
-            return "GPU-CUDA (FP32)"
+            return f"GPU-CUDA (FP32) - {torch.cuda.get_device_name(device)}"
     else:
-        return "CPU"
+        # For CPU, include current number of threads and total cores.
+        return f"CPU (using {torch.get_num_threads()} threads, {os.cpu_count()} cores)"
 
+# =============================================================================
+# CPU-Specific Optimizations
+# =============================================================================
+if not torch.cuda.is_available():
+    num_threads = os.cpu_count()
+    torch.set_num_threads(num_threads)
+    torch.set_num_interop_threads(num_threads)
+    print(f"Optimized for CPU: Using {torch.get_num_threads()} threads (out of {os.cpu_count()} cores).")
+
+# =============================================================================
+# Piece Unicode Mapping & Famous Moves
+# =============================================================================
 piece_unicode = {
     'P': '♙', 'N': '♘', 'B': '♗', 'R': '♖', 'Q': '♕', 'K': '♔',
     'p': '♟', 'n': '♞', 'b': '♝', 'r': '♜', 'q': '♛', 'k': '♚'
@@ -265,7 +280,7 @@ def print_ascii_stats(stats):
     print("=" * 60)
 
 # =============================================================================
-# GPU Selection and Tensor Core Detection
+# GPU Selection and CPU Optimizations
 # =============================================================================
 num_devices = torch.cuda.device_count()
 if num_devices == 0:

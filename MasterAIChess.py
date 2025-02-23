@@ -9,21 +9,20 @@ About:
     aggregating the best knowledge from two agents (White and Black). Each agent
     trains its own deep neural network model and maintains its own transposition table
     during play. After every game, the system merges the learned weights and evaluation
-    data from both agents into a master copy. This aggregated master copy is then used to
-    update all new games, ensuring that the combined experience is preserved.
+    data from both agents into a master copy. This aggregated master copy is then used
+    to update all new games, ensuring that the combined experience is preserved.
 
     The program is designed to work in both GPU and CPU environments. When a CUDA-enabled
     GPU is available, it can operate in standard FP32 mode ("GPU-CUDA") or, if supported,
     in mixed precision mode using Tensor Cores ("GPU-Tensor"). When running on the CPU,
-    the program automatically sets the number of threads to match your system’s core count.
-    In that case, the training info will display the number of threads being used along with
-    the total available cores.
+    the program automatically sets the number of threads to match your system’s capacity,
+    and the training info displays only the number of threads being used.
 
     In Human vs AI mode, when a game finishes the engine updates all files and then prompts
     the user with "Play again? (Y/N):" so a new game can begin immediately. Also, clicking
     the "Stop" button in any game window causes the program to save all necessary data and
-    close the window properly. The main menu also allows the user to quit the entire program
-    by entering "Q", ensuring a proper save and exit.
+    close the window properly. The main menu includes a quit option ("Q") to exit the entire
+    program gracefully after saving.
 
     Only errors and key recovery/fix events are logged (with timestamps), so routine
     informational messages are not recorded.
@@ -137,8 +136,8 @@ def get_training_mode():
         else:
             return f"GPU-CUDA (FP32) - {torch.cuda.get_device_name(device)}"
     else:
-        # For CPU, include current number of threads and total cores.
-        return f"CPU (using {torch.get_num_threads()} threads, {os.cpu_count()} cores)"
+        # Only show the current thread count
+        return f"CPU (using {torch.get_num_threads()} threads)"
 
 # =============================================================================
 # CPU-Specific Optimizations
@@ -147,7 +146,7 @@ if not torch.cuda.is_available():
     num_threads = os.cpu_count()
     torch.set_num_threads(num_threads)
     torch.set_num_interop_threads(num_threads)
-    print(f"Optimized for CPU: Using {torch.get_num_threads()} threads (out of {os.cpu_count()} cores).")
+    print(f"Optimized for CPU: Using {torch.get_num_threads()} threads.")
 
 # =============================================================================
 # Piece Unicode Mapping & Famous Moves

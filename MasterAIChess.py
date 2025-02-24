@@ -1,45 +1,55 @@
+#!/usr/bin/env python3
 """
 ===============================================================================
-   ULTIMATE HYBRID CPU/GPU-OPTIMIZED CHESS AI TRAINING ENGINE
+   ULTIMATE HYBRID CPU/GPU-OPTIMIZED CHESS AI TRAINING ENGINE 
+           (Revised with Enhanced MCTS and Detailed Console Logging)
 ===============================================================================
 Title: Ultimate Hybrid CPU/GPU-Optimized Chess AI Training Engine
 
 About:
     This engine continuously learns from self-play and human-vs-AI matches while
     aggregating the best knowledge from two agents (White and Black). Each agent
-    trains its own deep neural network model and maintains its own transposition table
-    during play. After every game, the system merges the learned weights and evaluation
-    data from both agents into a master copy. This aggregated master copy is then used
-    to update all new games, ensuring that the combined experience is preserved.
+    trains its own deep neural network model and maintains its own transposition table.
+    After every game, the system merges the learned weights and evaluation data from
+    both agents into a master copy. This aggregated master copy is then used to update
+    all new games, ensuring that the combined experience is preserved.
 
-    The program is designed to work in both GPU and CPU environments. When a CUDA-enabled
-    GPU is available, it can operate in standard FP32 mode ("GPU-CUDA") or, if supported,
-    in mixed precision mode using Tensor Cores ("GPU-Tensor"). When running on the CPU,
-    the program automatically sets the number of threads to match your system’s capacity,
-    and the training info displays only the number of threads being used.
+    The program supports both GPU and CPU environments. On startup, it detects available
+    GPUs and prompts you to choose a GPU index or to run on CPU. CPU-specific optimizations
+    (like setting the thread count) are applied when needed.
 
-    In Human vs AI mode, when a game finishes the engine updates all files and then prompts
-    the user with "Play again? (Y/N):" so a new game can begin immediately. Also, clicking
-    the "Stop" button in any game window causes the program to save all necessary data and
-    close the window properly. The main menu includes a quit option ("Q") to exit the entire
-    program gracefully after saving.
-
-    Only errors and key recovery/fix events are logged (with timestamps), so routine
-    informational messages are not recorded.
+    This version preserves all existing features (self-play training, GUI modes,
+    stats, master sync, etc.) while replacing the network with an improved convolutional
+    architecture and enhancing the Monte Carlo Tree Search (MCTS) algorithm ten–fold.
+    Additionally, detailed logging is now output to the screen.
 ===============================================================================
 """
 
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
+import sys
 import warnings
 warnings.filterwarnings("ignore", message=".*dpi.*")
 
 import logging
-logging.basicConfig(filename="error_log.txt",
-                    level=logging.ERROR,
-                    format='%(asctime)s - %(levelname)s - %(message)s',
-                    datefmt='%Y-%m-%d %H:%M:%S')
+# Global flag to control extended debug logging.
+EXTENDED_DEBUG = False
+
+# Configure logging to file
+logging.basicConfig(
+    filename="error_log.txt",
+    level=logging.DEBUG,  # Log DEBUG and above to file
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+# Also add a console handler to output detailed logs to the screen.
+console_handler = logging.StreamHandler(sys.stdout)
+# Set console level based on EXTENDED_DEBUG (INFO if off, DEBUG if on)
+console_handler.setLevel(logging.DEBUG if EXTENDED_DEBUG else logging.INFO)
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+console_handler.setFormatter(formatter)
+logging.getLogger().addHandler(console_handler)
 
 import threading
 import torch
@@ -58,13 +68,9 @@ from matplotlib.widgets import Button
 # =============================================================================
 # Hyperparameters & Configuration Variables
 # =============================================================================
-STATE_SIZE = 768          # 12 channels x 8x8 board representation.
+STATE_SIZE = 768          # 12 channels x 8x8 board representation (flattened)
 MOVE_SIZE = 128           # One-hot encoding for moves.
-INPUT_SIZE = STATE_SIZE + MOVE_SIZE
-
-HIDDEN_SIZE = 12288       # Neurons in hidden layers.
-NUM_HIDDEN_LAYERS = 3     # Number of hidden layers.
-DROPOUT_PROB = 0.0
+INPUT_SIZE = STATE_SIZE + MOVE_SIZE  # Total input: 896
 
 LEARNING_RATE = 1e-3
 BATCH_SIZE = 64
@@ -73,14 +79,18 @@ EPS_START = 1.0
 EPS_END = 0.05
 EPS_DECAY = 0.9999
 
-USE_MCTS = True
-MCTS_SIMULATIONS = 50
+USE_MCTS = True           # Enable MCTS
+
+# Enhance MCTS: increase simulations tenfold to 500.
+MCTS_SIMULATIONS = 500  
 MCTS_EXPLORATION_PARAM = 1.4
 
 MOVE_TIME_LIMIT = 180.0
 INITIAL_CLOCK = 300.0
 
 SAVE_INTERVAL_SECONDS = 300
+
+# File paths
 MODEL_SAVE_PATH_WHITE = "white_dqn.pt"
 MODEL_SAVE_PATH_BLACK = "black_dqn.pt"
 TABLE_SAVE_PATH_WHITE = "white_transposition.pkl"
@@ -93,14 +103,10 @@ MASTER_TABLE_SAVE_PATH = "master_transposition.pkl"
 use_amp = False
 
 # =============================================================================
-# Global Variables for Master Copy (in RAM)
+# Global Variables for Master Copy and Training Time
 # =============================================================================
 MASTER_MODEL_RAM = None  
 MASTER_TABLE_RAM = {}
-
-# =============================================================================
-# Global Variable for Tracking Active Training Time
-# =============================================================================
 training_active_start_time = None
 
 # =============================================================================
@@ -136,7 +142,6 @@ def get_training_mode():
         else:
             return f"GPU-CUDA (FP32) - {torch.cuda.get_device_name(device)}"
     else:
-        # Only show the current thread count
         return f"CPU (using {torch.get_num_threads()} threads)"
 
 # =============================================================================
@@ -146,7 +151,7 @@ if not torch.cuda.is_available():
     num_threads = os.cpu_count()
     torch.set_num_threads(num_threads)
     torch.set_num_interop_threads(num_threads)
-    print(f"Optimized for CPU: Using {torch.get_num_threads()} threads.")
+    logging.debug(f"Optimized for CPU: Using {torch.get_num_threads()} threads.")
 
 # =============================================================================
 # Piece Unicode Mapping & Famous Moves
@@ -185,6 +190,7 @@ class StatsManager:
                 self.total_games = data.get("total_games", 0)
                 self.global_move_count = data.get("global_move_count", 0)
                 self.accumulated_training_time = data.get("accumulated_training_time", 0)
+                logging.debug("Stats loaded successfully.")
             except Exception as e:
                 logging.error(f"Error loading stats: {e}. Initializing new stats.")
                 self.wins_white = 0
@@ -213,6 +219,7 @@ class StatsManager:
         try:
             with open(self.filename, "wb") as f:
                 pickle.dump(data, f)
+            logging.debug("Stats saved successfully.")
         except Exception as e:
             logging.error(f"Error saving stats: {e}")
 
@@ -238,6 +245,7 @@ def update_training_time():
         elapsed = time.time() - training_active_start_time
         stats_manager.accumulated_training_time += elapsed
         training_active_start_time = time.time()
+        logging.debug(f"Updated training time by {elapsed:.2f} seconds.")
 
 def get_total_training_time():
     if training_active_start_time is not None:
@@ -309,20 +317,51 @@ print(f"Using device: {device}")
 print(f"Mixed precision (AMP) enabled: {use_amp}")
 
 # =============================================================================
-# Neural Network (ChessDQN) Class
+# Improved Neural Network (ChessDQN) Class
 # =============================================================================
 class ChessDQN(nn.Module):
-    def __init__(self, input_size, hidden_size):
+    def __init__(self):
         super(ChessDQN, self).__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_size, hidden_size),
+        # Board branch: reshape flattened board to (12,8,8)
+        self.board_conv = nn.Sequential(
+            nn.Conv2d(12, 32, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size),
+            nn.GroupNorm(num_groups=4, num_channels=32),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.Linear(hidden_size, 1)
+            nn.GroupNorm(num_groups=8, num_channels=64),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.GroupNorm(num_groups=16, num_channels=128),
+            nn.Flatten()  # Output shape: (batch, 128*8*8)= (batch, 8192)
         )
+        # Move branch: process the 128-dim move vector
+        self.move_fc = nn.Sequential(
+            nn.Linear(MOVE_SIZE, 256),
+            nn.ReLU(),
+            nn.LayerNorm(256)
+        )
+        # Combined branch:
+        self.combined_fc = nn.Sequential(
+            nn.Linear(8192 + 256, 4096),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(4096, 1024),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(1024, 1)
+        )
+
     def forward(self, x):
-        return self.net(x)
+        # x: (batch, 896) where first 768 are board, next 128 are move
+        board_input = x[:, :STATE_SIZE]  # shape: (batch, 768)
+        move_input = x[:, STATE_SIZE:]     # shape: (batch, 128)
+        board_input = board_input.view(-1, 12, 8, 8)
+        board_features = self.board_conv(board_input)  # (batch, 8192)
+        move_features = self.move_fc(move_input)         # (batch, 256)
+        combined = torch.cat((board_features, move_features), dim=1)
+        output = self.combined_fc(combined)
+        return output
 
 # =============================================================================
 # Board and Move Encoding Functions
@@ -341,7 +380,7 @@ def board_to_tensor(board):
             arr[channel, row, col] = 1.0
         else:
             arr[channel + 6, row, col] = 1.0
-    return arr.flatten()
+    return arr.flatten()  # Returns a flattened array of size 768
 
 def move_to_tensor(move):
     v = np.zeros(MOVE_SIZE, dtype=np.float32)
@@ -350,7 +389,7 @@ def move_to_tensor(move):
     return v
 
 # =============================================================================
-# MCTS Node and Search Functions
+# Enhanced MCTS Node and Search Functions
 # =============================================================================
 class MCTSNode:
     def __init__(self, board, parent=None, move=None):
@@ -360,37 +399,66 @@ class MCTSNode:
         self.children = {}  
         self.visits = 0
         self.total_value = 0.0
+        self.prior = 1.0  # Uniform prior by default
 
     def is_leaf(self):
         return len(self.children) == 0
 
-    def best_child(self, c_param=MCTS_EXPLORATION_PARAM):
-        for child in self.children.values():
-            if child.visits == 0:
-                return child
-        return max(self.children.values(), key=lambda node: (node.total_value / node.visits) +
-                   c_param * math.sqrt(math.log(self.visits) / node.visits))
+    def puct_score(self, c_param=MCTS_EXPLORATION_PARAM):
+        q_value = self.total_value / self.visits if self.visits > 0 else 0
+        u_value = c_param * self.prior * math.sqrt(self.parent.visits) / (1 + self.visits) if self.parent else 0
+        return q_value + u_value
 
 def mcts_search(root_board, neural_agent, num_simulations=MCTS_SIMULATIONS):
+    logging.debug("Starting MCTS search...")
     root = MCTSNode(root_board.copy())
-    for _ in range(num_simulations):
+    # Expand root: assign uniform priors to legal moves
+    legal_moves = list(root.board.legal_moves)
+    for move in legal_moves:
+        new_board = root.board.copy()
+        new_board.push(move)
+        child = MCTSNode(new_board, parent=root, move=move)
+        child.prior = 1.0 / len(legal_moves)
+        root.children[move] = child
+    logging.debug(f"Root expanded with {len(legal_moves)} moves.")
+
+    for sim in range(num_simulations):
         node = root
+        search_path = [node]
+        # Selection
         while not node.is_leaf() and not node.board.is_game_over():
-            node = node.best_child()
+            node = max(node.children.values(), key=lambda n: n.puct_score())
+            search_path.append(node)
+        # Expansion / Evaluation
         if not node.board.is_game_over():
-            for move in node.board.legal_moves:
-                if move not in node.children:
+            legal_moves = list(node.board.legal_moves)
+            if legal_moves:
+                for move in legal_moves:
                     new_board = node.board.copy()
                     new_board.push(move)
-                    node.children[move] = MCTSNode(new_board, parent=node, move=move)
-            if node.children:
-                node = random.choice(list(node.children.values()))
-        value = neural_agent.evaluate_board(node.board)
-        while node is not None:
-            node.visits += 1
-            node.total_value += value
-            node = node.parent
+                    child = MCTSNode(new_board, parent=node, move=move)
+                    child.prior = 1.0 / len(legal_moves)
+                    node.children[move] = child
+            value = neural_agent.evaluate_board(node.board)
+            leaf_value = value
+        else:
+            # Terminal node: use game result as value.
+            result = node.board.result()
+            if result == "1-0":
+                leaf_value = 1
+            elif result == "0-1":
+                leaf_value = -1
+            else:
+                leaf_value = 0
+        # Backpropagation
+        for n in reversed(search_path):
+            n.visits += 1
+            n.total_value += leaf_value
+            leaf_value = -leaf_value
+        if sim % 100 == 0:
+            logging.debug(f"MCTS simulation {sim} complete.")
     best_move = max(root.children.items(), key=lambda item: item[1].visits)[0]
+    logging.debug("MCTS search complete.")
     return best_move
 
 # =============================================================================
@@ -403,12 +471,18 @@ def minimax_with_time(board, depth, alpha, beta, maximizing, agent_white, agent_
     return 0, random.choice(legal_moves)
 
 # =============================================================================
-# Master Merge and Recovery Functions (Error logs only)
+# Improved merge_state_dicts Function
 # =============================================================================
 def merge_state_dicts(state_dict1, state_dict2):
     merged = {}
-    for key in state_dict1.keys():
-        merged[key] = (state_dict1[key] + state_dict2[key]) / 2.0
+    all_keys = set(state_dict1.keys()).union(set(state_dict2.keys()))
+    for key in all_keys:
+        if key in state_dict1 and key in state_dict2:
+            merged[key] = (state_dict1[key] + state_dict2[key]) / 2.0
+        elif key in state_dict1:
+            merged[key] = state_dict1[key]
+        else:
+            merged[key] = state_dict2[key]
     return merged
 
 def merge_transposition_tables(table1, table2):
@@ -438,6 +512,7 @@ def update_master_in_memory(agent_white, agent_black):
          MASTER_TABLE_RAM = merge_transposition_tables(MASTER_TABLE_RAM, new_master_table)
     else:
          MASTER_TABLE_RAM = new_master_table
+    logging.debug("Master model and table updated in memory.")
 
 def update_master_with_agent(agent):
     global MASTER_MODEL_RAM, MASTER_TABLE_RAM
@@ -454,6 +529,7 @@ def update_master_with_agent(agent):
          MASTER_TABLE_RAM = current_table
     flush_master_to_disk()
     load_master_into_agent(agent)
+    logging.debug(f"Master updated with agent {agent.name}.")
 
 def flush_master_to_disk():
     global MASTER_MODEL_RAM, MASTER_TABLE_RAM
@@ -472,14 +548,15 @@ def load_master_into_agent(agent):
     global MASTER_MODEL_RAM, MASTER_TABLE_RAM
     if MASTER_MODEL_RAM is not None:
         try:
-            agent.policy_net.load_state_dict(MASTER_MODEL_RAM)
+            # Use strict=False to avoid key mismatches if the model architecture has changed.
+            agent.policy_net.load_state_dict(MASTER_MODEL_RAM, strict=False)
         except Exception as e:
             logging.error(f"Error loading RAM master model for {agent.name}: {e}")
     else:
         if os.path.exists(MASTER_MODEL_SAVE_PATH):
             try:
                 master_state = torch.load(MASTER_MODEL_SAVE_PATH, map_location=device)
-                agent.policy_net.load_state_dict(master_state)
+                agent.policy_net.load_state_dict(master_state, strict=False)
             except Exception as e:
                 logging.error(f"Error loading master model from disk for {agent.name}: {e}")
     if MASTER_TABLE_RAM:
@@ -590,6 +667,7 @@ def background_saver(agent_white, agent_black, stats_manager):
             agent_black.save_transposition_table()
             stats_manager.save_stats()
             flush_master_to_disk()
+            logging.debug("Background saver: Models and stats saved.")
         except Exception as e:
             logging.error(f"Background saver error: {e}")
 
@@ -599,7 +677,7 @@ def background_saver(agent_white, agent_black, stats_manager):
 class ChessAgent:
     def __init__(self, name, model_path, table_path):
         self.name = name
-        self.policy_net = ChessDQN(INPUT_SIZE, HIDDEN_SIZE).to(device)
+        self.policy_net = ChessDQN().to(device)
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=LEARNING_RATE)
         self.criterion = nn.MSELoss()
         self.epsilon = EPS_START
@@ -613,12 +691,14 @@ class ChessAgent:
         if os.path.exists(self.model_path):
             try:
                 self.policy_net.load_state_dict(torch.load(self.model_path, map_location=device))
+                logging.debug(f"{self.name} model loaded from {self.model_path}.")
             except Exception as e:
                 logging.error(f"Error loading model from {self.model_path}: {e}. Initializing new model.")
         if os.path.exists(self.table_path):
             try:
                 with open(self.table_path, "rb") as f:
                     self.transposition_table = pickle.load(f)
+                logging.debug(f"{self.name} transposition table loaded from {self.table_path}.")
             except Exception as e:
                 logging.error(f"Error loading transposition table from {self.table_path}: {e}. Attempting recovery.")
                 if MASTER_TABLE_RAM:
@@ -628,6 +708,7 @@ class ChessAgent:
 
     def save_model(self):
         torch.save(self.policy_net.state_dict(), self.model_path)
+        logging.debug(f"{self.name} model saved to {self.model_path}.")
 
     def save_transposition_table(self):
         with self.table_lock:
@@ -635,6 +716,7 @@ class ChessAgent:
         try:
             with open(self.table_path, "wb") as f:
                 pickle.dump(table_copy, f)
+            logging.debug(f"{self.name} transposition table saved to {self.table_path}.")
         except Exception as e:
             logging.error(f"Error saving transposition table for {self.name}: {e}")
 
@@ -681,6 +763,7 @@ class ChessAgent:
             return random.choice(moves)
         else:
             if USE_MCTS:
+                logging.debug(f"{self.name} using MCTS for move selection.")
                 return mcts_search(board, self, num_simulations=MCTS_SIMULATIONS)
             else:
                 best_move = None
@@ -742,6 +825,7 @@ class ChessAgent:
                     loss.backward()
                     self.optimizer.step()
         self.game_memory = []
+        logging.debug(f"{self.name} trained after game with result {result}.")
 
 # =============================================================================
 # GUIChessAgent Class (for Human vs AI)
@@ -752,7 +836,7 @@ class GUIChessAgent:
         self.ai_is_white = ai_is_white
         self.model_path = MODEL_SAVE_PATH_WHITE if ai_is_white else MODEL_SAVE_PATH_BLACK
         self.table_path = TABLE_SAVE_PATH_WHITE if ai_is_white else TABLE_SAVE_PATH_BLACK
-        self.policy_net = ChessDQN(INPUT_SIZE, HIDDEN_SIZE).to(device)
+        self.policy_net = ChessDQN().to(device)
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=LEARNING_RATE)
         self.criterion = nn.MSELoss()
         self.epsilon = 0.1
@@ -786,6 +870,7 @@ class GUIChessAgent:
 
     def save_model(self):
         torch.save(self.policy_net.state_dict(), self.model_path)
+        logging.debug(f"GUI agent model saved to {self.model_path}.")
 
     def save_table(self):
         with self.table_lock:
@@ -793,6 +878,7 @@ class GUIChessAgent:
         try:
             with open(self.table_path, "wb") as f:
                 pickle.dump(table_copy, f)
+            logging.debug(f"GUI agent transposition table saved to {self.table_path}.")
         except Exception as e:
             logging.error(f"Error saving AI table: {e}")
 
@@ -824,6 +910,7 @@ class GUIChessAgent:
         if not moves:
             return None
         if random.random() < self.epsilon:
+            logging.debug("GUI agent selecting random move.")
             return random.choice(moves)
         else:
             return self.iterative_deepening(board)
@@ -878,6 +965,7 @@ class GUIChessAgent:
                     loss.backward()
                     self.optimizer.step()
         self.game_memory = []
+        logging.debug("GUI agent trained after game.")
 
 # =============================================================================
 # Self-Play Training (Faster) Mode (No Visual)
@@ -892,6 +980,7 @@ def self_play_training_faster():
     saver_thread.start()
     if training_active_start_time is None:
         training_active_start_time = time.time()
+    logging.debug("Starting fast self-play training loop.")
     while True:
         try:
             load_master_into_agent(agent_white)
@@ -915,6 +1004,7 @@ def self_play_training_faster():
             if board.is_game_over():
                 res = board.result()
                 stats_manager.record_result(res)
+                logging.debug(f"Game finished with result {res}.")
                 if res == "1-0":
                     agent_white.train_after_game(+1)
                     agent_black.train_after_game(-1)
@@ -928,7 +1018,7 @@ def self_play_training_faster():
             print_ascii_stats(stats_manager)
         except KeyboardInterrupt:
             update_training_time()
-            print("Stopping faster self-play training...")
+            logging.info("Stopping faster self-play training...")
             break
 
 # =============================================================================
@@ -963,6 +1053,7 @@ class SelfPlayGUI:
         self.ani = animation.FuncAnimation(self.fig, self.update, interval=1000, blit=False, cache_frame_data=False)
         if training_active_start_time is None:
             training_active_start_time = time.time()
+        logging.debug("Starting SelfPlayGUI mode.")
         plt.show()
 
     def reset_callback(self, event):
@@ -970,6 +1061,7 @@ class SelfPlayGUI:
         self.move_counter = 0
         self.current_game_start_time = time.time()
         self.draw_board()
+        logging.debug("SelfPlayGUI board reset.")
         print("Board reset.")
 
     def stop_callback(self, event):
@@ -978,6 +1070,7 @@ class SelfPlayGUI:
             self.ani = None
         self.save_callback(event)
         plt.close(self.fig)
+        logging.debug("SelfPlayGUI stopped.")
 
     def save_callback(self, event):
         self.agent_white.save_model()
@@ -985,6 +1078,7 @@ class SelfPlayGUI:
         self.agent_white.save_transposition_table()
         self.agent_black.save_transposition_table()
         stats_manager.save_stats()
+        logging.debug("SelfPlayGUI models and stats saved.")
         print("Game and model saved.")
 
     def on_key_press(self, event):
@@ -1008,6 +1102,7 @@ class SelfPlayGUI:
                 stats_manager.total_games += 1
                 res = self.board.result()
                 stats_manager.record_result(res)
+                logging.debug(f"SelfPlayGUI game over with result {res}.")
                 if res == "1-0":
                     self.agent_white.train_after_game(+1)
                     self.agent_black.train_after_game(-1)
@@ -1135,6 +1230,7 @@ class HumanVsAIGUI:
         self.click_cid = self.fig.canvas.mpl_connect('button_press_event', self.on_click)
         if training_active_start_time is None:
             training_active_start_time = time.time()
+        logging.debug("HumanVsAIGUI mode started.")
         plt.show()
 
     def reset_callback(self, event):
@@ -1142,6 +1238,7 @@ class HumanVsAIGUI:
         self.move_counter = 0
         self.status_message = "Your move" if self.board.turn == self.human_is_white else "AI is thinking..."
         self.draw_board()
+        logging.debug("HumanVsAIGUI board reset.")
         print("Board reset.")
 
     def stop_callback(self, event):
@@ -1150,11 +1247,13 @@ class HumanVsAIGUI:
             self.ani = None
         self.save_callback(event)
         plt.close(self.fig)
+        logging.debug("HumanVsAIGUI stopped.")
 
     def save_callback(self, event):
         self.ai_agent.save_model()
         self.ai_agent.save_table()
         stats_manager.save_stats()
+        logging.debug("HumanVsAIGUI model and table saved.")
         print("Game and model saved.")
 
     def on_key_press(self, event):
@@ -1363,6 +1462,7 @@ class HumanVsAIGUI:
 # Main Menu (with Quit option)
 # =============================================================================
 def main():
+    global EXTENDED_DEBUG  # Declare EXTENDED_DEBUG as global at the start of the function.
     initial_master_sync()
     while True:
         print("Welcome back! Current saved stats are:")
@@ -1371,8 +1471,9 @@ def main():
         print("[1] Self-play training (Faster) - no board animation")
         print("[2] Self-play training (Slower) - AI vs AI with visual")
         print("[3] Human vs AI (Graphical)")
+        print(f"[4] Toggle Extended Debug Logging (currently: {'enabled' if EXTENDED_DEBUG else 'disabled'})")
         print("[Q] Quit")
-        choice = input("Enter 1, 2, 3, or Q: ").strip().lower()
+        choice = input("Enter 1, 2, 3, 4, or Q: ").strip().lower()
         if choice == 'q':
             stats_manager.save_stats()
             print("Exiting program.")
@@ -1386,6 +1487,13 @@ def main():
             if color_input not in ['w', 'b']:
                 color_input = 'w'
             HumanVsAIGUI(human_is_white=(color_input == 'w'))
+        elif choice == '4':
+            EXTENDED_DEBUG = not EXTENDED_DEBUG
+            if EXTENDED_DEBUG:
+                console_handler.setLevel(logging.DEBUG)
+            else:
+                console_handler.setLevel(logging.INFO)
+            logging.info(f"Extended debug logging is now {'enabled' if EXTENDED_DEBUG else 'disabled'}.")
 
 if __name__ == "__main__":
     main()

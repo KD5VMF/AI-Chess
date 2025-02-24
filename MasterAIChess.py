@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 ===============================================================================
    EVOLVING HYBRID CHESS AI ENGINE:
@@ -9,9 +9,9 @@ Title: Evolving Hybrid Chess AI Engine: Adaptive Deep Learning and Multi-Strateg
 About:
     This engine continuously evolves by integrating data learned from self-play and
     human interaction. It uses:
-      • A deep convolutional neural network (ChessDQN) to evaluate board positions.
-      • Monte Carlo Tree Search (MCTS) for stochastic, exploratory move selection.
-      • A multithreaded minimax search with alpha–beta pruning for deterministic move
+      \u2022 A deep convolutional neural network (ChessDQN) to evaluate board positions.
+      \u2022 Monte Carlo Tree Search (MCTS) for stochastic, exploratory move selection.
+      \u2022 A multithreaded minimax search with alpha\u2013beta pruning for deterministic move
         evaluation.
       
     At key intervals—and importantly on exit—the engine finalizes its state by merging
@@ -67,7 +67,7 @@ training_active_start_time = None
 import logging
 logging.basicConfig(
     filename="error_log.txt",
-    level=logging.DEBUG,
+    level=logging.ERROR,  # Only errors are logged to the file.
     format='%(asctime)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
@@ -84,21 +84,21 @@ STATE_SIZE = 768          # 12 channels x 8x8 board representation (flattened)
 MOVE_SIZE = 128           # One-hot encoding vector for moves.
 INPUT_SIZE = STATE_SIZE + MOVE_SIZE  # Total input size for the network
 
-LEARNING_RATE = 1e-3
-BATCH_SIZE = 64
-EPOCHS_PER_GAME = 3
-EPS_START = 1.0
-EPS_END = 0.05
-EPS_DECAY = 0.9999
+LEARNING_RATE = 1e-3           # Lower learning rate for more stable gradient updates
+BATCH_SIZE = 64                # Increased batch size to better utilize multiple CPU cores
+EPOCHS_PER_GAME = 8            # More epochs per game to extract more learning from each game
+EPS_START = 1.0                # Start fully random to encourage exploration
+EPS_END = 0.05                 # End at low exploration
+EPS_DECAY = 0.9995             # Slightly slower decay to maintain exploration a bit longer
 
-USE_MCTS = True           # Flag to use MCTS move selection
-MCTS_SIMULATIONS = 500    # Number of MCTS simulations per move
-MCTS_EXPLORATION_PARAM = 1.4
+USE_MCTS = True                # Continue using MCTS move selection
+MCTS_SIMULATIONS = 3000        # Double the number of simulations for deeper search per move
+MCTS_EXPLORATION_PARAM = 1.4   # Keep exploration parameter unchanged
 
-MOVE_TIME_LIMIT = 180.0   # Maximum time (seconds) to search for a move
-INITIAL_CLOCK = 300.0     # Initial time (seconds) for each agent
+MOVE_TIME_LIMIT = 60.0         # Limit each move to 60 seconds for faster game iterations
+INITIAL_CLOCK = 300.0          # Each agent gets 5 minutes, promoting shorter games and more training cycles
 
-SAVE_INTERVAL_SECONDS = 300
+SAVE_INTERVAL_SECONDS = 600    # Save less frequently (every 10 minutes) to reduce overhead
 
 # File paths for saving individual and master models, tables, and statistics.
 MODEL_SAVE_PATH_WHITE = "white_dqn.pt"
@@ -266,7 +266,7 @@ def move_to_tensor(move):
 # =============================================================================
 def minimax_recursive(board, depth, alpha, beta, maximizing, agent_white, agent_black, end_time):
     """
-    Recursive minimax search with alpha–beta pruning.
+    Recursive minimax search with alpha\u2013beta pruning.
     Uses agent.evaluate_board() for leaf node evaluation.
     Enforces a time limit via end_time.
     """
@@ -514,7 +514,7 @@ def update_master_in_memory(agent_white, agent_black):
             MASTER_TABLE_RAM = merge_transposition_tables(MASTER_TABLE_RAM, new_master_table)
         else:
             MASTER_TABLE_RAM = new_master_table
-        logging.debug("Master model and table updated in memory.")
+        logging.info("Master model and table updated in memory.")
 
 def update_master_with_agent(agent):
     global MASTER_MODEL_RAM, MASTER_TABLE_RAM
@@ -532,7 +532,7 @@ def update_master_with_agent(agent):
             MASTER_TABLE_RAM = current_table
     flush_master_to_disk()
     load_master_into_agent(agent)
-    logging.debug(f"Master updated with agent {agent.name}.")
+    logging.info(f"Master updated with agent {agent.name}.")
 
 def flush_master_to_disk():
     global MASTER_MODEL_RAM, MASTER_TABLE_RAM
@@ -686,7 +686,8 @@ def background_saver(agent_white, agent_black, stats_manager):
             agent_black.save_transposition_table()
             stats_manager.save_stats()
             flush_master_to_disk()
-            logging.debug("Background saver: Models and stats saved.")
+            if EXTENDED_DEBUG:
+                logging.debug("Background saver: Models and stats saved.")
         except Exception as e:
             logging.error(f"Background saver error: {e}")
 
@@ -785,7 +786,8 @@ class ChessAgent:
             return random.choice(moves)
         else:
             if USE_MCTS:
-                logging.debug(f"{self.name} using MCTS for move selection.")
+                if EXTENDED_DEBUG:
+                    logging.debug(f"{self.name} using MCTS for move selection.")
                 return mcts_search(board, self, num_simulations=MCTS_SIMULATIONS)
             else:
                 end_time = time.time() + MOVE_TIME_LIMIT
@@ -1002,7 +1004,7 @@ class MCTSNode:
         return q_value + u_value
 
 def mcts_search(root_board, neural_agent, num_simulations=MCTS_SIMULATIONS):
-    logging.debug("Starting MCTS search...")
+    logging.info("Starting MCTS search...")
     root = MCTSNode(root_board.copy())
     legal_moves = list(root.board.legal_moves)
     for move in legal_moves:
@@ -1042,10 +1044,10 @@ def mcts_search(root_board, neural_agent, num_simulations=MCTS_SIMULATIONS):
             n.visits += 1
             n.total_value += leaf_value
             leaf_value = -leaf_value
-        if sim % 100 == 0:
+        if sim % 100 == 0 and EXTENDED_DEBUG:
             logging.debug(f"MCTS simulation {sim} complete.")
+    logging.info("MCTS search complete.")
     best_move = max(root.children.items(), key=lambda item: item[1].visits)[0]
-    logging.debug("MCTS search complete.")
     return best_move
 
 # =============================================================================
@@ -1061,7 +1063,7 @@ def self_play_training_faster():
     saver_thread.start()
     if training_active_start_time is None:
         training_active_start_time = time.time()
-    logging.debug("Starting fast self-play training loop.")
+    logging.info("Starting fast self-play training loop.")
     while True:
         try:
             load_master_into_agent(agent_white)
@@ -1085,7 +1087,7 @@ def self_play_training_faster():
             if board.is_game_over():
                 res = board.result()
                 stats_manager.record_result(res)
-                logging.debug(f"Game finished with result {res}.")
+                logging.info(f"Game finished with result {res}.")
                 if res == "1-0":
                     agent_white.train_after_game(+1)
                     agent_black.train_after_game(-1)
@@ -1131,7 +1133,7 @@ class SelfPlayGUI:
         self.ani = animation.FuncAnimation(self.fig, self.update, interval=1000, blit=False, cache_frame_data=False)
         if training_active_start_time is None:
             training_active_start_time = time.time()
-        logging.debug("Starting SelfPlayGUI mode.")
+        logging.info("Starting SelfPlayGUI mode.")
         plt.show()
 
     def reset_callback(self, event):
@@ -1139,7 +1141,8 @@ class SelfPlayGUI:
         self.move_counter = 0
         self.current_game_start_time = time.time()
         self.draw_board()
-        logging.debug("SelfPlayGUI board reset.")
+        if EXTENDED_DEBUG:
+            logging.debug("SelfPlayGUI board reset.")
         print("Board reset.")
 
     def stop_callback(self, event):
@@ -1148,7 +1151,8 @@ class SelfPlayGUI:
             self.ani = None
         self.save_callback(event)
         plt.close(self.fig)
-        logging.debug("SelfPlayGUI stopped.")
+        if EXTENDED_DEBUG:
+            logging.debug("SelfPlayGUI stopped.")
 
     def save_callback(self, event):
         self.agent_white.save_model()
@@ -1156,7 +1160,7 @@ class SelfPlayGUI:
         self.agent_white.save_transposition_table()
         self.agent_black.save_transposition_table()
         stats_manager.save_stats()
-        logging.debug("SelfPlayGUI models and stats saved.")
+        logging.info("SelfPlayGUI models and stats saved.")
         print("Game and model saved.")
 
     def on_key_press(self, event):
@@ -1180,7 +1184,7 @@ class SelfPlayGUI:
                 stats_manager.total_games += 1
                 res = self.board.result()
                 stats_manager.record_result(res)
-                logging.debug(f"SelfPlayGUI game over with result {res}.")
+                logging.info(f"SelfPlayGUI game over with result {res}.")
                 if res == "1-0":
                     self.agent_white.train_after_game(+1)
                     self.agent_black.train_after_game(-1)
@@ -1294,7 +1298,7 @@ class HumanVsAIGUI:
         self.click_cid = self.fig.canvas.mpl_connect('button_press_event', self.on_click)
         if training_active_start_time is None:
             training_active_start_time = time.time()
-        logging.debug("HumanVsAIGUI mode started.")
+        logging.info("HumanVsAIGUI mode started.")
         plt.show()
 
     def reset_callback(self, event):
@@ -1302,19 +1306,21 @@ class HumanVsAIGUI:
         self.move_counter = 0
         self.status_message = "Your move" if self.board.turn == self.human_is_white else "AI is thinking..."
         self.draw_board()
-        logging.debug("HumanVsAIGUI board reset.")
+        if EXTENDED_DEBUG:
+            logging.debug("HumanVsAIGUI board reset.")
         print("Board reset.")
 
     def stop_callback(self, event):
         self.save_callback(event)
         plt.close(self.fig)
-        logging.debug("HumanVsAIGUI stopped.")
+        if EXTENDED_DEBUG:
+            logging.debug("HumanVsAIGUI stopped.")
 
     def save_callback(self, event):
         self.ai_agent.save_model()
         self.ai_agent.save_table()
         stats_manager.save_stats()
-        logging.debug("HumanVsAIGUI model and table saved.")
+        logging.info("HumanVsAIGUI model and table saved.")
         print("Game and model saved.")
 
     def on_key_press(self, event):

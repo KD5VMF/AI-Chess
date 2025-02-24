@@ -83,19 +83,19 @@ STATE_SIZE = 768          # 12 channels x 8x8 board representation (flattened)
 MOVE_SIZE = 128           # One-hot encoding vector for moves.
 INPUT_SIZE = STATE_SIZE + MOVE_SIZE  # Total input size for the network
 
-LEARNING_RATE = 1e-3
+LEARNING_RATE = 1e-2
 BATCH_SIZE = 64
-EPOCHS_PER_GAME = 3
+EPOCHS_PER_GAME = 4
 EPS_START = 1.0
 EPS_END = 0.05
 EPS_DECAY = 0.9999
 
 USE_MCTS = True           # Flag to use MCTS move selection
-MCTS_SIMULATIONS = 500    # Number of MCTS simulations per move
+MCTS_SIMULATIONS = 1500    # Number of MCTS simulations per move
 MCTS_EXPLORATION_PARAM = 1.4
 
-MOVE_TIME_LIMIT = 180.0   # Maximum time (seconds) to search for a move
-INITIAL_CLOCK = 300.0     # Initial time (seconds) for each agent
+MOVE_TIME_LIMIT = 1800.0   # Maximum time (seconds) to search for a move
+INITIAL_CLOCK = 3000.0     # Initial time (seconds) for each agent
 
 SAVE_INTERVAL_SECONDS = 300
 

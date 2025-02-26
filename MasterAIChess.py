@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 ===============================================================================
    EVOLVING HYBRID CHESS AI ENGINE:
@@ -92,7 +91,7 @@ EPS_END = 0.05
 EPS_DECAY = 0.9999
 
 USE_MCTS = True           # Flag to use MCTS move selection
-MCTS_SIMULATIONS = 500    # Number of MCTS simulations per move
+MCTS_SIMULATIONS = 1000    # Number of MCTS simulations per move
 MCTS_EXPLORATION_PARAM = 1.4
 
 MOVE_TIME_LIMIT = 180.0   # Maximum time (seconds) to search for a move

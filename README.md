@@ -31,7 +31,7 @@ This system is **designed for high-end hardware** and supports **multi-threaded*
   - Ensures transposition tables and neural networks remain **consistent**.
 
 ### 📊 Real-Time System Monitoring
-- Displays **RAM usage (CPU/GPU)**, **CPU load**, and **GPU memory allocation**.
+- Displays **RAM usage (CPU/GPU)**.
 - Tracks **average game duration, moves per game, and games per hour**.
 
 ### 🏎️ Optimized for High-Performance Machines

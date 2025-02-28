@@ -8,7 +8,7 @@ The **Ultra-Powered Hybrid Chess AI Trainer** is a high-performance, self-improv
 - **Minimax with Alpha-Beta Pruning** for deterministic evaluation.
 - **Alternating First-Mover Training** to ensure balance in self-play.
 - **File Recovery & Consistency Checks** to prevent corruption and data loss.
-- **Performance Monitoring** displaying **COU and GPU memory allocation**.
+- **Performance Monitoring** displaying **CPU and GPU memory allocation**.
 
 This system is **designed for high-end hardware** and supports **multi-threaded** execution with **optimized hyperparameters** for deep search and efficient training.
 

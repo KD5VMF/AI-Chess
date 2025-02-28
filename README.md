@@ -1,83 +1,103 @@
-# AI Chess Engine (Deep Reinforcement Learning)
+# Re-attempting to create and save the README.md file
+
+readme_content = """# Ultra-Powered Hybrid Chess AI Trainer
+
+![Chess AI Trainer](https://via.placeholder.com/800x200?text=Ultra-Powered+Hybrid+Chess+AI+Trainer)  
+*Mastering Self-Play Through Alternating First-Mover Advantage, Automated File Recovery, and Extensive Stats*
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Features](#features)
+- [How It Works](#how-it-works)
+  - [Neural Network Architecture (ChessDQN)](#neural-network-architecture-chessdqn)
+  - [Self-Play Training & Alternating First-Mover Strategy](#self-play-training--alternating-first-mover-strategy)
+  - [Search Algorithms: MCTS and Minimax](#search-algorithms-mcts-and-minimax)
+  - [File Recovery and Consistency Checks](#file-recovery-and-consistency-checks)
+  - [System Resource Monitoring](#system-resource-monitoring)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Hyperparameters and Tuning](#hyperparameters-and-tuning)
+- [File Structure](#file-structure)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
 
 ## Overview
-This AI Chess program utilizes **Deep Q-Networks (DQN)** to evaluate board positions and make optimal moves. It is designed to leverage **GPU acceleration (CUDA & Tensor Cores)** for efficient deep learning computations.
+
+Ultra-Powered Hybrid Chess AI Trainer is an advanced training engine that continuously improves a hybrid chess AI model. It leverages:
+- **Deep Learning**: A custom deep convolutional network (ChessDQN) for board evaluation.
+- **Monte Carlo Tree Search (MCTS)**: For stochastic exploration of move sequences.
+- **Minimax Search with Alpha-Beta Pruning**: For deterministic evaluation of positions.
+
+The engine employs an **alternating first-mover strategy** to mitigate the inherent advantage of playing white. In self-play, the agent that starts the game is tracked separately via detailed first-mover statistics. The system also features robust file recovery routines to ensure that models and transposition tables are consistent, even in the face of file corruption.
+
+Additionally, the trainer continuously monitors system resource usage (CPU and GPU RAM) and displays comprehensive training statistics.
+
+---
 
 ## Features
-- **Self-Play Training Mode** (Fast & Visual options)
-- **Human vs AI Mode** (Graphical Chess Board)
-- **Adaptive Neural Network Size** (Adjustable Hidden Layer Neurons)
-- **Supports NVIDIA RTX GPUs** with Tensor Core acceleration
-- **AMP (Automatic Mixed Precision) for FP16 calculations**
 
-## System Requirements
-- **Python 3.8+**
-- **PyTorch with CUDA support**
-- **Chess Library (`python-chess`)**
-- **Matplotlib for GUI mode**
+- **Hybrid AI Architecture**  
+  Combines deep learning (via ChessDQN) with classical search techniques (MCTS, minimax).
+  
+- **Alternating First-Mover Self-Play**  
+  Alternates the starting position in self-play to reduce first-move bias and provides detailed first-mover statistics.
 
-## Neural Network Architecture
-This AI uses a deep neural network to evaluate chess positions. The **number of neurons in hidden layers (`HIDDEN_SIZE`) significantly impacts AI strength and VRAM usage**.
+- **Robust File Recovery**  
+  On startup and shutdown, compares model and transposition table files (white, black, and master) and repairs any outdated or corrupt files by using the largest (most trained) version.
 
-### **Initial Configuration (Default `HIDDEN_SIZE = 512`):**
-- **Low VRAM usage (~200MB)**
-- **Fast move calculation (~1.5 million operations per move)**
-- **Basic strategic depth** (good for quick inference)
-- **Ideal for lightweight setups & initial testing**
+- **Extensive Statistics**  
+  Displays overall game stats, average moves/game, training time, file sizes, and even real-time system resource usage.
 
-### **Optimized Configuration for RTX 3060 (Tested at `HIDDEN_SIZE = 12288`):**
-- **VRAM Usage: ~5.9GB**
-- **100× more computation per move (~151 million operations per move)**
-- **Deeper strategic play & better long-term planning**
-- **Uses AMP (FP16) for efficiency**
-- **Best balance of AI strength vs. speed for RTX 3060 12GB**
+- **High-Powered Hardware Optimizations**  
+  Designed to fully leverage high-end systems with increased batch sizes, epochs, and deeper search iterations.
 
-### **How Hidden Size Affects Performance**
-| `HIDDEN_SIZE`  | **VRAM Usage** | **Computation Time** | **Strength** |
-|---------------|--------------|----------------|----------|
-| **512**      | ~200MB       | 🚀 Very Fast   | 🟢 Entry-level, weak AI |
-| **1024**     | ~800MB       | ⚡ Fast        | 🟢 Slightly stronger but still basic |
-| **4096**     | ~1GB         | ⚠️ Moderate   | 🟡 Decent AI, good for casual play |
-| **8192**     | ~2.7GB       | 🐢 Slower      | 🟡 Stronger AI, better position awareness |
-| **12288**    | ~5.9GB       | 🔥 Balanced   | 🟠 Good for competitive play, improved strategy |
-| **16384**    | ~10.3GB      | 🛑 Too Slow   | 🔴 Overkill, diminishing returns |
+---
 
-### **Should You Use `HIDDEN_SIZE = 12288`?**
-✔ **YES** if you want **maximum AI strength** on an RTX 3060 (12GB).  
-✔ **Enable AMP (FP16)** to cut VRAM usage by 50%.  
-❌ **Reduce to 8192 or 10240** if moves take too long.  
+## How It Works
+
+### Neural Network Architecture (ChessDQN)
+
+The core evaluation engine is a deep convolutional network named **ChessDQN**:
+- **Board Representation**: The board is encoded as a 12x8x8 tensor (each piece type in its own channel).
+- **Move Encoding**: Moves are encoded as one-hot vectors.
+- **Dual Branch Design**:  
+  - **Convolutional Branch**: Processes board state through a series of convolutions and normalization layers.
+  - **Fully-Connected Branch**: Processes the move vector.
+- **Fusion Layer**: Concatenates the board and move features and outputs a single evaluation score.
+
+### Self-Play Training & Alternating First-Mover Strategy
+
+- **Self-Play**: Two agents (white and black) play against each other.  
+- **Alternation**: Each game alternates the first mover, so one game the white agent starts (playing as white), the next the black agent starts.
+- **First-Mover Stats**:  
+  - Records how many times each agent started the game, wins and losses when they started.
+
+### Search Algorithms: MCTS and Minimax
+
+- **Monte Carlo Tree Search (MCTS)**:  
+  - **Selection**: Uses PUCT to balance exploration and exploitation.
+  - **Expansion**: Adds child nodes at leaf nodes.
+  - **Evaluation**: Uses ChessDQN to evaluate new nodes.
+  - **Backpropagation**: Updates statistics up the tree.
+- **Minimax Search with Alpha-Beta Pruning**:  
+  - Recursively evaluates moves with a fixed search depth.
+  - Uses multi-threading to parallelize evaluation, reducing search time.
+
+### File Recovery and Consistency Checks
+
+- **Consistency Checks**: On startup and exit, the program compares file sizes for white, black, and master files.
+- **Repair Mechanism**:  
+  - The largest file is considered the best (most trained) and is used to repair smaller, outdated versions.
+- **Automated Recovery**: If a file is corrupt or missing, the program recovers it from available data.
+
+---
 
 ## Installation
-```bash
-pip install torch torchvision torchaudio chess matplotlib
-```
 
-## Running the AI
-### **Self-Play Training (No GUI, Fastest Mode)**
-```bash
-python AI_Chess.py --mode self-play-fast
-```
-
-### **Self-Play with Visualization**
-```bash
-python AI_Chess.py --mode self-play-gui
-```
-
-### **Human vs AI (Graphical Mode)**
-```bash
-python AI_Chess.py --mode human-vs-ai
-```
-
-## Monitoring GPU Performance
-To check VRAM usage while running the AI:
-```bash
-nvidia-smi
-```
-If VRAM exceeds **11GB**, reduce `HIDDEN_SIZE` to avoid slowdowns.
-
-## Final Recommendation
-- **Start with `HIDDEN_SIZE = 512`** for fast inference.
-- **Increase gradually (4096, 8192, 12288)** for stronger AI.
-- **Monitor VRAM & computation time before going higher.**
-
-🚀 **With this setup, you are running a cutting-edge Chess AI fully optimized for RTX GPUs!** 🔥
+1. **Clone the Repository**  
+   ```bash
+   git clone https://github.com/yourusername/UltraPoweredHybridChessAITrainer.git
+   cd UltraPoweredHybridChessAITrainer

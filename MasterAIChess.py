@@ -1,24 +1,22 @@
 """
 ===============================================================================
    ULTRA-POWERED HYBRID CHESS AI TRAINER: MASTERING SELF-PLAY THROUGH ALTERNATING
-         FIRST-MOVER ADVANTAGE WITH AUTOMATED FILE RECOVERY AND EXTENSIVE STATS
+         FIRST-MOVER ADVANTAGE, AUTOMATED FILE RECOVERY, AND EXTENSIVE STATS
 ===============================================================================
 Title: Ultra-Powered Hybrid Chess AI Trainer: Mastering Self-Play Through Alternating First-Mover Advantage
 
 About:
-    This advanced AI chess training engine is designed to continuously improve a hybrid chess
-    engine by leveraging both deep learning and classical search techniques. The engine uses a 
-    deep convolutional network (ChessDQN) for board evaluation, Monte Carlo Tree Search (MCTS) 
-    for stochastic move selection, and a multi-threaded minimax search with alpha-beta pruning 
-    for deterministic lookahead. To counteract the inherent first-move advantage in chess, 
-    self-play games alternate which agent starts first – the agent playing first always takes 
-    the white side. Detailed statistics are maintained, including overall wins, draws, total moves,
-    and first-mover-specific performance. Moreover, robust file recovery routines check (at startup 
-    and shutdown) all model and transposition table files (for white, black, and the master copy), 
-    determine which file is most up-to-date (largest file size), and automatically repair any 
-    outdated or corrupt files. This engine is optimized to fully leverage high-end hardware and 
-    is extensively commented for clarity and maintainability.
-
+    This advanced chess AI training engine continuously improves a hybrid model using deep learning,
+    Monte Carlo Tree Search (MCTS), and multi-threaded minimax search with alpha-beta pruning. To
+    counter the inherent first-move advantage, self-play games alternate which agent starts first 
+    (the first mover always plays white). Detailed statistics—including win/draw counts, move counts,
+    training time, and first-mover-specific performance—are recorded and displayed. In addition, the 
+    engine robustly monitors and repairs model and transposition table files by comparing file sizes 
+    (to determine which is most trained) and replacing any outdated files with the best available data.
+    Finally, system RAM usage is displayed (CPU or GPU) so you can see the resources in use.
+    
+    This engine is designed to fully leverage high-end hardware. Hyperparameters such as batch size,
+    number of epochs, and the number of MCTS simulations are increased for maximum performance.
 ===============================================================================
 """
 
@@ -32,6 +30,7 @@ import warnings
 import threading
 import concurrent.futures
 import atexit
+import psutil  # For retrieving system memory usage
 
 import numpy as np
 import torch
@@ -48,7 +47,7 @@ from matplotlib.widgets import Button
 def format_duration(total_seconds):
     """
     Convert a time duration (in seconds) into a human-readable string.
-    Format: Xy Xm Xd Xh Xm Xs
+    Format: Xy Xm Xd Xh Xm Xs.
     """
     years = total_seconds // 31536000
     total_seconds %= 31536000
@@ -64,7 +63,7 @@ def format_duration(total_seconds):
 
 def format_file_size(size_bytes):
     """
-    Convert a file size in bytes to a human-readable string (in Byte, KB, MB, etc.).
+    Convert a file size (in bytes) to a human-readable string (B, KB, MB, GB, or TB).
     """
     if size_bytes == 0:
         return "0 B"
@@ -92,14 +91,14 @@ def get_training_mode():
 # =============================================================================
 warnings.filterwarnings("ignore", message=".*dpi.*")
 EXTENDED_DEBUG = False  # Toggle extended debug logging
-use_amp = False         # Mixed precision flag
+use_amp = False         # Whether to use mixed precision training
 
-# Global master variables (used for merging models and tables)
+# Global master variables (to merge data across agents)
 MASTER_MODEL_RAM = None  
 MASTER_TABLE_RAM = {}
 master_lock = threading.Lock()
 
-# Global training start time (to accumulate total training duration)
+# Global training start time to accumulate total training duration
 training_active_start_time = None
 
 # =============================================================================
@@ -107,7 +106,7 @@ training_active_start_time = None
 # =============================================================================
 def safe_load_torch_model(path):
     """
-    Safely attempt to load a torch model from a file.
+    Attempt to load a PyTorch model safely.
     Returns a tuple (model, file_size).
     """
     if not os.path.exists(path):
@@ -122,7 +121,7 @@ def safe_load_torch_model(path):
 
 def safe_load_pickle(path):
     """
-    Safely attempt to load a pickle file.
+    Attempt to load a pickle file safely.
     Returns a tuple (object, file_size).
     """
     if not os.path.exists(path):
@@ -138,7 +137,7 @@ def safe_load_pickle(path):
 
 def repair_agent_table_file(path, table_data):
     """
-    Save table_data to the given path to repair a corrupted table file.
+    Repair a transposition table file by saving the given table_data to disk.
     """
     try:
         with open(path, "wb") as f:
@@ -149,7 +148,7 @@ def repair_agent_table_file(path, table_data):
 
 def validate_model_file(path, min_size=1024*1024):
     """
-    Check if a model file exists and meets a minimum size (default 1 MB).
+    Check if a model file exists and is at least min_size bytes.
     """
     return os.path.exists(path) and os.path.getsize(path) >= min_size
 
@@ -158,13 +157,11 @@ def validate_model_file(path, min_size=1024*1024):
 # =============================================================================
 def check_and_repair_model_files():
     """
-    Compare the sizes of the white, black, and master model files.
+    Compare sizes of white, black, and master model files.
     Use the largest file to repair any that are smaller.
     """
     paths = [MODEL_SAVE_PATH_WHITE, MODEL_SAVE_PATH_BLACK, MASTER_MODEL_SAVE_PATH]
-    sizes = {}
-    for p in paths:
-        sizes[p] = os.path.getsize(p) if os.path.exists(p) else 0
+    sizes = {p: os.path.getsize(p) if os.path.exists(p) else 0 for p in paths}
     largest_path = max(sizes, key=sizes.get)
     largest_size = sizes[largest_path]
     for p in paths:
@@ -180,13 +177,11 @@ def check_and_repair_model_files():
 
 def check_and_repair_table_files():
     """
-    Compare the sizes of the white, black, and master transposition table files.
+    Compare sizes of white, black, and master transposition table files.
     Use the largest file to repair any that are smaller.
     """
     paths = [TABLE_SAVE_PATH_WHITE, TABLE_SAVE_PATH_BLACK, MASTER_TABLE_SAVE_PATH]
-    sizes = {}
-    for p in paths:
-        sizes[p] = os.path.getsize(p) if os.path.exists(p) else 0
+    sizes = {p: os.path.getsize(p) if os.path.exists(p) else 0 for p in paths}
     largest_path = max(sizes, key=sizes.get)
     largest_size = sizes[largest_path]
     for p in paths:
@@ -212,7 +207,7 @@ def check_and_repair_all_files():
 # =============================================================================
 import logging
 logging.basicConfig(
-    filename="Logs.txt",
+    filename="error_log.txt",
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
@@ -224,83 +219,56 @@ console_handler.setFormatter(formatter)
 logging.getLogger().addHandler(console_handler)
 
 # =============================================================================
-# Hyperparameters & File Paths
+# Hyperparameters & File Paths (Optimized for High-Power Machines)
 # =============================================================================
 STATE_SIZE = 768
 MOVE_SIZE = 128
 INPUT_SIZE = STATE_SIZE + MOVE_SIZE
 
-# For high-power machines, these parameters can be raised to maximize performance.
-# =============================================================================
-# Hyperparameters & File Paths for a High-Power AI System
-# =============================================================================
-#
-# LEARNING_RATE controls the step size during the optimization process (gradient descent).
-# - A higher learning rate (e.g., 0.01) speeds up learning but risks overshooting minima,
-#   potentially causing unstable training.
-# - A lower learning rate (e.g., 1e-4) ensures more stable convergence but can slow down progress.
-# The current setting of 1e-3 (0.001) is a balanced starting point for many models.
-LEARNING_RATE = 1e-4
+# LEARNING_RATE controls the step size during gradient descent.
+# A value of 1e-3 (0.001) is a balanced starting point.
+LEARNING_RATE = 1e-3
 
-# BATCH_SIZE is the number of training samples used in one forward/backward pass.
-# - Increasing the batch size (here, set to 256) allows better utilization of high-end hardware
-#   by parallelizing computations, which can speed up training.
-# - However, very large batches may require more memory and can sometimes lead to less noisy gradients,
-#   potentially affecting generalization.
-BATCH_SIZE = 128
+# BATCH_SIZE determines how many samples are processed in one training iteration.
+# Increasing to 256 allows full use of high-end hardware and accelerates training.
+BATCH_SIZE = 256
 
-# EPOCHS_PER_GAME determines how many times the model will iterate over the training data collected
-# during one game.
-# - More epochs (set to 5) allow the model to learn more thoroughly from each game, which is beneficial
-#   when ample compute is available.
-# - Too many epochs may lead to overfitting on a single game’s data, so this value should be balanced.
+# EPOCHS_PER_GAME is the number of training iterations on the data collected per game.
+# More epochs (5 here) can improve learning from each game.
 EPOCHS_PER_GAME = 5
 
-# EPS_START, EPS_END, and EPS_DECAY control the epsilon-greedy strategy for exploration during training.
-# - EPS_START = 1.0 means the agent begins by exploring completely randomly.
-# - EPS_END = 0.05 sets the lower bound for exploration, ensuring that the agent always retains some level of randomness.
-# - EPS_DECAY = 0.99999 means epsilon decays gradually, reducing exploration slowly.
-# Increasing EPS_DECAY (closer to 1) means exploration decays more slowly, which might be beneficial for a
-# complex problem space, while a lower value would make the agent exploit known good moves faster.
+# Epsilon values for the epsilon-greedy strategy.
+# EPS_START = 1.0 means full exploration at the beginning.
+# EPS_END = 0.05 ensures a small level of randomness is maintained.
+# EPS_DECAY = 0.99999 decays epsilon slowly for gradual transition from exploration to exploitation.
 EPS_START = 1.0
 EPS_END = 0.05
 EPS_DECAY = 0.99999
 
-# USE_MCTS is a Boolean flag that enables Monte Carlo Tree Search (MCTS) for move selection.
-# - When set to True, the engine uses MCTS to explore potential moves stochastically, which can lead to
-#   better move choices in complex positions.
+# USE_MCTS enables Monte Carlo Tree Search for move selection.
 USE_MCTS = True
 
-# MCTS_SIMULATIONS is the number of MCTS iterations performed for each move.
-# - More simulations (set to 2000) allow the search to explore a deeper and broader set of possible moves,
-#   improving move selection quality.
-# - However, more simulations increase computation time per move, so on less powerful machines, this may need to be lowered.
-MCTS_SIMULATIONS = 10000
+# MCTS_SIMULATIONS is the number of iterations of the MCTS algorithm.
+# A higher value (2000) allows deeper, more thorough search.
+MCTS_SIMULATIONS = 2000
 
-# MCTS_EXPLORATION_PARAM controls the exploration-exploitation trade-off within the MCTS.
-# - A higher value will favor exploring less-visited nodes, which might uncover unexpected strategies.
-# - A lower value will bias the search towards moves that have already been evaluated as promising.
-# The chosen value of 1.4 is a common default that balances both aspects.
+# MCTS_EXPLORATION_PARAM balances exploration vs. exploitation in MCTS.
+# The value 1.4 is a common default.
 MCTS_EXPLORATION_PARAM = 1.4
 
-# MOVE_TIME_LIMIT sets the maximum time allowed for the engine to search for a move.
-# - Increasing this limit (set to 300 seconds) permits the engine to perform more extensive searches,
-#   leading to higher-quality move decisions.
-# - However, too long a time per move may slow down overall gameplay, so it must be balanced with the game flow.
+# MOVE_TIME_LIMIT sets the maximum time for searching each move.
+# 300 seconds allows the engine to search deeply.
 MOVE_TIME_LIMIT = 300.0
 
-# INITIAL_CLOCK is the total time allocated to each agent at the start of a game.
-# - A longer clock (set to 600 seconds) allows the agent to think longer per move,
-#   which is especially useful when employing deep searches.
-# - Increasing this value may lead to more in-depth game analysis, at the cost of longer game durations.
-INITIAL_CLOCK = 1600.0
+# INITIAL_CLOCK is the total time available to each agent.
+# 600 seconds provides ample time for deeper analysis per game.
+INITIAL_CLOCK = 600.0
 
-# SAVE_INTERVAL_SECONDS determines how frequently the training state (models and statistics) is saved to disk.
-# - Setting this to 60 seconds means that the system saves its state very frequently, minimizing the risk
-#   of data loss in case of a crash.
-# - This is especially useful in long training sessions on high-power systems.
+# SAVE_INTERVAL_SECONDS defines how frequently the system saves its state.
+# 60 seconds ensures frequent backups of the model and stats.
 SAVE_INTERVAL_SECONDS = 60
 
+# File paths for saving models, transposition tables, and statistics.
 MODEL_SAVE_PATH_WHITE = "white_dqn.pt"
 MODEL_SAVE_PATH_BLACK = "black_dqn.pt"
 TABLE_SAVE_PATH_WHITE = "white_transposition.pkl"
@@ -352,7 +320,7 @@ print(f"Mixed precision (AMP) enabled: {use_amp}")
 class ChessDQN(nn.Module):
     def __init__(self):
         super(ChessDQN, self).__init__()
-        # Convolutional branch to process the board state (reshaped as 12x8x8)
+        # Convolutional branch: processes the 12x8x8 board representation.
         self.board_conv = nn.Sequential(
             nn.Conv2d(12, 32, kernel_size=3, padding=1),
             nn.ReLU(),
@@ -363,15 +331,15 @@ class ChessDQN(nn.Module):
             nn.Conv2d(64, 128, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.GroupNorm(num_groups=16, num_channels=128),
-            nn.Flatten()  # Flattens the output (size: 128*8*8 = 8192)
+            nn.Flatten()  # Output: 128*8*8 = 8192 features.
         )
-        # Fully-connected branch to process the move (one-hot encoded, length 128)
+        # Fully-connected branch: processes the one-hot encoded move vector.
         self.move_fc = nn.Sequential(
             nn.Linear(MOVE_SIZE, 256),
             nn.ReLU(),
             nn.LayerNorm(256)
         )
-        # Combined branch that merges board and move features and outputs a single evaluation
+        # Combined branch: merges board and move features to produce a single evaluation value.
         self.combined_fc = nn.Sequential(
             nn.Linear(8192 + 256, 4096),
             nn.ReLU(),
@@ -383,14 +351,12 @@ class ChessDQN(nn.Module):
         )
 
     def forward(self, x):
-        # Split the input into board and move parts
+        # Split input vector into board part and move part.
         board_input = x[:, :STATE_SIZE]
         move_input = x[:, STATE_SIZE:]
-        # Reshape board input to 12x8x8
         board_input = board_input.view(-1, 12, 8, 8)
         board_features = self.board_conv(board_input)
         move_features = self.move_fc(move_input)
-        # Concatenate the features and compute final evaluation
         combined = torch.cat((board_features, move_features), dim=1)
         output = self.combined_fc(combined)
         return output
@@ -400,7 +366,7 @@ class ChessDQN(nn.Module):
 # =============================================================================
 def board_to_tensor(board):
     """
-    Convert a chess.Board into a flattened tensor representation.
+    Convert a chess board to a flattened tensor representation.
     Each piece type and color occupies a separate channel.
     """
     piece_to_channel = {
@@ -421,7 +387,7 @@ def board_to_tensor(board):
 def move_to_tensor(move):
     """
     Encode a chess move as a one-hot vector.
-    First 64 indices for the from-square, next 64 for the to-square.
+    The first 64 indices represent the from-square; the next 64 represent the to-square.
     """
     vector = np.zeros(MOVE_SIZE, dtype=np.float32)
     vector[move.from_square] = 1.0
@@ -433,8 +399,8 @@ def move_to_tensor(move):
 # =============================================================================
 def minimax_recursive(board, depth, alpha, beta, maximizing, agent_white, agent_black, end_time):
     """
-    Recursively search the game tree using minimax with alpha-beta pruning.
-    Evaluation is done using the agent’s evaluate_board() method.
+    Recursively perform minimax search with alpha-beta pruning.
+    If the depth limit is reached or time expires, evaluate the board using the agent.
     """
     if time.time() > end_time or depth == 0 or board.is_game_over():
         eval_val = (agent_white.evaluate_board(board)
@@ -451,7 +417,7 @@ def minimax_recursive(board, depth, alpha, beta, maximizing, agent_white, agent_
             best_value = max(best_value, value)
             alpha = max(alpha, best_value)
             if beta <= alpha:
-                break
+                break  # Beta cutoff.
         return best_value
     else:
         best_value = math.inf
@@ -462,12 +428,12 @@ def minimax_recursive(board, depth, alpha, beta, maximizing, agent_white, agent_
             best_value = min(best_value, value)
             beta = min(beta, best_value)
             if beta <= alpha:
-                break
+                break  # Alpha cutoff.
         return best_value
 
 def minimax_with_time(board, depth, alpha, beta, maximizing, agent_white, agent_black, end_time):
     """
-    Top-level minimax that uses multi-threading to evaluate moves in parallel.
+    Top-level minimax search that uses multi-threading to evaluate moves in parallel.
     """
     if board.is_game_over():
         result = board.result()
@@ -541,7 +507,8 @@ class StatsManager:
 
     def load_stats(self):
         """
-        Load training statistics from the stats file.
+        Load training statistics from disk.
+        If loading fails, initialize new stats.
         """
         if os.path.exists(self.filename):
             try:
@@ -570,7 +537,7 @@ class StatsManager:
 
     def save_stats(self):
         """
-        Save training statistics to the stats file.
+        Save training statistics to disk.
         """
         data = {
             "wins_white": self.wins_white,
@@ -629,15 +596,17 @@ def get_total_training_time():
 
 def print_ascii_stats(stats):
     """
-    Print a neatly formatted ASCII statistics block, including overall stats,
-    file sizes, largest file information, training time, and first-mover stats.
+    Print a neatly formatted statistics block including overall game stats, file sizes,
+    largest file information, training time, and first-mover stats. Also display RAM usage.
     """
     os.system('cls' if os.name == 'nt' else 'clear')
-    # Determine largest model and table files:
+    
+    # Determine largest model file among white, black, and master files.
     model_paths = [MODEL_SAVE_PATH_WHITE, MODEL_SAVE_PATH_BLACK, MASTER_MODEL_SAVE_PATH]
     largest_model_path = max(model_paths, key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0)
     largest_model_size = os.path.getsize(largest_model_path) if os.path.exists(largest_model_path) else 0
 
+    # Determine largest table file among white, black, and master tables.
     table_paths = [TABLE_SAVE_PATH_WHITE, TABLE_SAVE_PATH_BLACK, MASTER_TABLE_SAVE_PATH]
     largest_table_path = max(table_paths, key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0)
     largest_table_size = os.path.getsize(largest_table_path) if os.path.exists(largest_table_path) else 0
@@ -668,6 +637,16 @@ def print_ascii_stats(stats):
     print(f" Avg Time/Game:  {avg_game_time:.1f} s")
     print(f" Games/Hour:     {games_per_hour:.2f}")
     print(f" Training on:    {get_training_mode()}")
+
+    # Display RAM usage: for CPU use psutil, for GPU use torch.cuda.memory_allocated.
+    if device.type == "cpu":
+        mem = psutil.virtual_memory()
+        print(f"RAM Used: {format_file_size(mem.used)} / {format_file_size(mem.total)} ({mem.percent}% used)")
+    else:
+        allocated = torch.cuda.memory_allocated(device)
+        reserved = torch.cuda.memory_reserved(device)
+        print(f"GPU RAM Allocated: {format_file_size(allocated)}, Reserved: {format_file_size(reserved)}")
+
     print("\n First Mover Stats:")
     print(f"  WHITE as first: Played {stats.first_mover_stats['white']['first_count']} times, Wins: {stats.first_mover_stats['white']['wins_when_first']}, Losses: {stats.first_mover_stats['white']['losses_when_first']}")
     print(f"  BLACK as first: Played {stats.first_mover_stats['black']['first_count']} times, Wins: {stats.first_mover_stats['black']['wins_when_first']}, Losses: {stats.first_mover_stats['black']['losses_when_first']}")
@@ -679,7 +658,7 @@ def print_ascii_stats(stats):
 # =============================================================================
 def merge_state_dicts(state_dict1, state_dict2):
     """
-    Merge two model state dictionaries by averaging values.
+    Merge two model state dictionaries by averaging their values.
     """
     merged = {}
     all_keys = set(state_dict1.keys()).union(set(state_dict2.keys()))
@@ -706,8 +685,7 @@ def merge_transposition_tables(table1, table2):
 
 def update_master_in_memory(agent_white, agent_black):
     """
-    Merge the white and black agents' models and transposition tables
-    into the global master copies.
+    Merge the white and black agents' models and transposition tables into the global master copies.
     """
     global MASTER_MODEL_RAM, MASTER_TABLE_RAM
     with master_lock:
@@ -731,7 +709,7 @@ def update_master_in_memory(agent_white, agent_black):
 
 def update_master_with_agent(agent):
     """
-    Update the master data with a single agent's data.
+    Update the master data using a single agent's data.
     """
     global MASTER_MODEL_RAM, MASTER_TABLE_RAM
     with master_lock:
@@ -752,7 +730,7 @@ def update_master_with_agent(agent):
 
 def flush_master_to_disk():
     """
-    Write the global master model and table to disk.
+    Write the master model and table to disk.
     """
     global MASTER_MODEL_RAM, MASTER_TABLE_RAM
     if MASTER_MODEL_RAM is not None:
@@ -768,7 +746,7 @@ def flush_master_to_disk():
 
 def load_master_into_agent(agent):
     """
-    Load the global master model and table into an agent.
+    Load the master model and table into an agent.
     """
     global MASTER_MODEL_RAM, MASTER_TABLE_RAM
     if MASTER_MODEL_RAM is not None:
@@ -798,7 +776,7 @@ def load_master_into_agent(agent):
 
 def recover_master_model():
     """
-    Attempt to recover the master model from the white and black model files.
+    Recover the master model by merging the white and black models.
     """
     global MASTER_MODEL_RAM
     white_model, white_size = safe_load_torch_model(MODEL_SAVE_PATH_WHITE)
@@ -821,7 +799,7 @@ def recover_master_model():
 
 def recover_master_table():
     """
-    Attempt to recover the master transposition table from the white and black files.
+    Recover the master transposition table by merging the white and black tables.
     """
     global MASTER_TABLE_RAM
     white_table, white_size = safe_load_pickle(TABLE_SAVE_PATH_WHITE)
@@ -846,9 +824,8 @@ def recover_master_table():
 
 def initial_master_sync():
     """
-    At startup, load the master model and transposition table from disk.
-    If these files are corrupt or missing, attempt to recover them from agent files.
-    Then, perform a consistency check and repair on all files.
+    At startup, load the master model and table from disk. If corrupt or missing,
+    recover them from agent files. Then, perform a consistency check and repair on all files.
     """
     global MASTER_MODEL_RAM, MASTER_TABLE_RAM
     if os.path.exists(MASTER_MODEL_SAVE_PATH):
@@ -877,7 +854,7 @@ def initial_master_sync():
             recover_master_table()
     else:
         logging.error("Initial sync: No master table file found. Recovery attempted from agents.")
-    # Repair all files based on largest file data
+    # After loading, repair all files based on the largest available data.
     check_and_repair_all_files()
 
 # =============================================================================
@@ -885,7 +862,7 @@ def initial_master_sync():
 # =============================================================================
 def finalize_engine():
     """
-    On exit, check and repair all files again, flush master data to disk, and save stats.
+    On exit, check and repair all files, flush master data to disk, and save stats.
     """
     check_and_repair_all_files()
     flush_master_to_disk()
@@ -899,8 +876,7 @@ atexit.register(finalize_engine)
 # =============================================================================
 def background_saver(agent_white, agent_black, stats_manager):
     """
-    Runs in a separate thread to save agent models, transposition tables, and stats 
-    periodically (every SAVE_INTERVAL_SECONDS).
+    Runs in a separate thread to periodically save models, transposition tables, and stats.
     """
     while True:
         time.sleep(SAVE_INTERVAL_SECONDS)
@@ -922,9 +898,9 @@ class ChessAgent:
     def __init__(self, name, model_path, table_path):
         """
         Initialize a ChessAgent.
-        - Loads the agent's model from file; if the file is too small (indicating corruption),
-          it repairs the file by loading the master model.
-        - Loads the agent's transposition table; if it fails, repairs it using the master table.
+        - Loads the model from file; if the file is too small (indicating corruption), it repairs it
+          using the master model.
+        - Loads the transposition table; if loading fails, it repairs the file using the master table.
         """
         self.name = name
         self.model_path = model_path
@@ -936,7 +912,7 @@ class ChessAgent:
         self.steps = 0
         self.clock = INITIAL_CLOCK
         self.game_memory = []
-        # Validate and load model file
+        # Validate and load the model file.
         if os.path.exists(self.model_path):
             if not validate_model_file(self.model_path, min_size=1024*1024):
                 logging.error(f"{self.model_path} is too small; repairing from master if available.")
@@ -953,7 +929,7 @@ class ChessAgent:
                     logging.debug(f"{self.name} model loaded from {self.model_path}.")
                 except Exception as e:
                     logging.error(f"Error loading model from {self.model_path}: {e}. Initializing new model.")
-        # Load transposition table and repair if needed
+        # Load the transposition table and repair if necessary.
         if os.path.exists(self.table_path):
             try:
                 with open(self.table_path, "rb") as f:
@@ -968,7 +944,6 @@ class ChessAgent:
                 repair_agent_table_file(self.table_path, self.transposition_table)
         else:
             self.transposition_table = {}
-
         self.table_lock = threading.Lock()
 
     def save_model(self):
@@ -987,8 +962,8 @@ class ChessAgent:
 
     def evaluate_board(self, board):
         """
-        Evaluate a board position using the agent's neural network.
-        Caches results in the transposition table.
+        Evaluate the given board using the neural network.
+        Caches the result in the transposition table.
         """
         fen = board.fen()
         with self.table_lock:
@@ -1010,7 +985,7 @@ class ChessAgent:
 
     def evaluate_candidate_move(self, board, move):
         """
-        Evaluate a specific move by adding a bonus for "famous moves" if applicable.
+        Evaluate a candidate move by applying a bonus for famous moves.
         """
         move_san = board.san(move)
         move_san_clean = move_san.replace("!", "").replace("?", "")
@@ -1022,9 +997,8 @@ class ChessAgent:
 
     def select_move(self, board, opponent_agent):
         """
-        Select a move using epsilon-greedy strategy.
-        With probability epsilon, selects a random legal move.
-        Otherwise, uses MCTS (if enabled) or minimax search to choose a move.
+        Select a move using an epsilon-greedy strategy.
+        Randomly selects a move with probability epsilon; otherwise, uses MCTS or minimax.
         """
         is_white_turn = board.turn == chess.WHITE
         if (self.name == "white" and is_white_turn) or (self.name == "black" and not is_white_turn):
@@ -1053,7 +1027,7 @@ class ChessAgent:
 
     def iterative_deepening(self, board, opponent_agent):
         """
-        Iteratively deepen the search (if used instead of fixed-depth search).
+        Perform iterative deepening search until the move time limit is reached.
         """
         end_time = time.time() + MOVE_TIME_LIMIT
         best_move = None
@@ -1070,7 +1044,8 @@ class ChessAgent:
 
     def train_after_game(self, result):
         """
-        Train the agent’s network on the game memory after a game ends.
+        Train the agent's network using the game memory.
+        The 'result' parameter indicates the outcome (+1 win, -1 loss, 0 draw).
         """
         if not self.game_memory:
             return
@@ -1104,13 +1079,13 @@ class ChessAgent:
         logging.debug(f"{self.name} trained after game with result {result}.")
 
 # =============================================================================
-# GUIChessAgent Class: For Human vs. AI Play (Graphical Interface)
+# GUIChessAgent Class: For Human vs. AI Play (Graphical)
 # =============================================================================
 class GUIChessAgent:
     def __init__(self, ai_is_white):
         """
         Initialize the GUI Chess Agent for Human vs. AI mode.
-        Attempts to load the master model and local table file; repairs local table if needed.
+        Attempts to load the master model and local table; repairs the local table if necessary.
         """
         self.name = "human-vs-ai"
         self.ai_is_white = ai_is_white
@@ -1315,19 +1290,18 @@ def mcts_search(root_board, neural_agent, num_simulations=MCTS_SIMULATIONS):
     return best_move
 
 # =============================================================================
-# Self-Play Training Modes
+# Self-Play Training Mode (Fast, No Animation)
 # =============================================================================
 def self_play_training_faster():
     """
-    Self-play training mode (fast, no board animation) with alternating first-mover advantage.
+    Fast self-play training mode with alternating first-mover advantage.
     
-    - The role of first mover alternates between the two agents (white and black).
-    - The agent playing first always plays as white.
-    - After each game, the result is used to update both the network (via training) and 
-      first-mover statistics.
-    - For first-mover stats, if the first mover is white then a "1-0" result counts as a win;
-      if the first mover is black then a "0-1" result counts as a win.
-    - Pressing Ctrl-C will interrupt training and return to the main menu.
+    The first mover alternates each game so that the agent that starts (plays as white)
+    is tracked separately in first-mover statistics:
+      - If white is the first mover, a result of "1-0" is a win for the first mover.
+      - If black is the first mover, a result of "0-1" is a win for the first mover.
+    After each game, both agents are trained on their game memory.
+    Pressing Ctrl-C will interrupt training and return to the main menu.
     """
     global training_active_start_time
     agent_white = ChessAgent("white", MODEL_SAVE_PATH_WHITE, TABLE_SAVE_PATH_WHITE)
@@ -1345,7 +1319,7 @@ def self_play_training_faster():
     try:
         while True:
             board = chess.Board()
-            # Alternate first mover each game.
+            # Alternate first mover every game.
             if game_counter % 2 == 0:
                 first_mover = agent_white
                 second_mover = agent_black
@@ -1353,7 +1327,7 @@ def self_play_training_faster():
                 first_mover = agent_black
                 second_mover = agent_white
 
-            # Record which agent is the first mover
+            # Record which agent started as first mover.
             stats_manager.first_mover_stats[first_mover.name]["first_count"] += 1
             print(f"Game {game_counter + 1}: {first_mover.name.upper()} is playing as first mover (white).")
 
@@ -1375,7 +1349,7 @@ def self_play_training_faster():
                 stats_manager.global_move_count += 1
 
             result = board.result()
-            # Update first-mover stats according to which agent was first mover
+            # Update first-mover stats:
             if first_mover.name == "white":
                 if result == "1-0":
                     stats_manager.first_mover_stats["white"]["wins_when_first"] += 1
@@ -1387,7 +1361,7 @@ def self_play_training_faster():
                 elif result == "1-0":
                     stats_manager.first_mover_stats["black"]["losses_when_first"] += 1
 
-            # Train the agents based on the result
+            # Train agents based on game result.
             if result == "1-0":
                 first_mover.train_after_game(+1)
                 second_mover.train_after_game(-1)
@@ -1825,7 +1799,7 @@ class HumanVsAIGUI:
 # =============================================================================
 def main():
     global EXTENDED_DEBUG
-    # At startup, synchronize master files and check/repair all files.
+    # At startup, synchronize master files and repair any inconsistencies.
     initial_master_sync()
     check_and_repair_all_files()
     while True:

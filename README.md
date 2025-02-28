@@ -1,103 +1,189 @@
-# Re-attempting to create and save the README.md file
-
-readme_content = """# Ultra-Powered Hybrid Chess AI Trainer
-
-![Chess AI Trainer](https://via.placeholder.com/800x200?text=Ultra-Powered+Hybrid+Chess+AI+Trainer)  
-*Mastering Self-Play Through Alternating First-Mover Advantage, Automated File Recovery, and Extensive Stats*
-
-## Table of Contents
-
-- [Overview](#overview)
-- [Features](#features)
-- [How It Works](#how-it-works)
-  - [Neural Network Architecture (ChessDQN)](#neural-network-architecture-chessdqn)
-  - [Self-Play Training & Alternating First-Mover Strategy](#self-play-training--alternating-first-mover-strategy)
-  - [Search Algorithms: MCTS and Minimax](#search-algorithms-mcts-and-minimax)
-  - [File Recovery and Consistency Checks](#file-recovery-and-consistency-checks)
-  - [System Resource Monitoring](#system-resource-monitoring)
-- [Installation](#installation)
-- [Usage](#usage)
-- [Hyperparameters and Tuning](#hyperparameters-and-tuning)
-- [File Structure](#file-structure)
-- [Contributing](#contributing)
-- [License](#license)
-
----
+# Ultra-Powered Hybrid Chess AI Trainer
 
 ## Overview
 
-Ultra-Powered Hybrid Chess AI Trainer is an advanced training engine that continuously improves a hybrid chess AI model. It leverages:
-- **Deep Learning**: A custom deep convolutional network (ChessDQN) for board evaluation.
-- **Monte Carlo Tree Search (MCTS)**: For stochastic exploration of move sequences.
-- **Minimax Search with Alpha-Beta Pruning**: For deterministic evaluation of positions.
+The **Ultra-Powered Hybrid Chess AI Trainer** is a high-performance, self-improving chess AI designed for self-play training. It leverages a hybrid approach that combines:
+- **Deep Reinforcement Learning** using a Deep Q-Network (DQN) for board evaluation.
+- **Monte Carlo Tree Search (MCTS)** for move selection.
+- **Minimax with Alpha-Beta Pruning** for deterministic evaluation.
+- **Alternating First-Mover Training** to ensure balance in self-play.
+- **File Recovery & Consistency Checks** to prevent corruption and data loss.
+- **Performance Monitoring** displaying **RAM usage, CPU load, and GPU memory allocation**.
 
-The engine employs an **alternating first-mover strategy** to mitigate the inherent advantage of playing white. In self-play, the agent that starts the game is tracked separately via detailed first-mover statistics. The system also features robust file recovery routines to ensure that models and transposition tables are consistent, even in the face of file corruption.
-
-Additionally, the trainer continuously monitors system resource usage (CPU and GPU RAM) and displays comprehensive training statistics.
+This system is **designed for high-end hardware** and supports **multi-threaded** execution with **optimized hyperparameters** for deep search and efficient training.
 
 ---
 
 ## Features
 
-- **Hybrid AI Architecture**  
-  Combines deep learning (via ChessDQN) with classical search techniques (MCTS, minimax).
-  
-- **Alternating First-Mover Self-Play**  
-  Alternates the starting position in self-play to reduce first-move bias and provides detailed first-mover statistics.
+### 🤖 Hybrid AI Chess Engine
+- Combines **Deep Learning (DQN), MCTS, and Minimax Search**.
+- Uses **Multi-Threading and GPU Acceleration** for high-speed calculations.
+- Implements **Tensor-based Board Evaluation** for real-time decision-making.
 
-- **Robust File Recovery**  
-  On startup and shutdown, compares model and transposition table files (white, black, and master) and repairs any outdated or corrupt files by using the largest (most trained) version.
+### 🔄 Alternating First-Mover Advantage
+- Ensures that self-play games **alternate between white and black starting**.
+- Records detailed statistics for **first-mover performance analysis**.
 
-- **Extensive Statistics**  
-  Displays overall game stats, average moves/game, training time, file sizes, and even real-time system resource usage.
+### 🛠️ Automatic File Repair & Recovery
+- At **startup and shutdown**, the AI automatically checks model files:
+  - Uses the **largest and most trained model** for data recovery.
+  - Ensures transposition tables and neural networks remain **consistent**.
 
-- **High-Powered Hardware Optimizations**  
-  Designed to fully leverage high-end systems with increased batch sizes, epochs, and deeper search iterations.
+### 📊 Real-Time System Monitoring
+- Displays **RAM usage (CPU/GPU)**, **CPU load**, and **GPU memory allocation**.
+- Tracks **average game duration, moves per game, and games per hour**.
+
+### 🏎️ Optimized for High-Performance Machines
+- **High batch sizes and deep searches** for AI training.
+- **Multi-threaded parallel processing** to speed up evaluations.
+- **Automatic model merging and reinforcement learning**.
 
 ---
 
 ## How It Works
 
-### Neural Network Architecture (ChessDQN)
+### 🧠 Neural Network Architecture (ChessDQN)
+The AI uses a **Deep Q-Network (DQN)** with convolutional layers to evaluate the board position:
+1. **Board Representation** → 12x8x8 tensor (each piece type has its own channel).
+2. **Move Encoding** → One-hot vector for move selection.
+3. **Fusion Layer** → Combines board state and move evaluation.
+4. **Final Output** → A **score predicting the best move**.
 
-The core evaluation engine is a deep convolutional network named **ChessDQN**:
-- **Board Representation**: The board is encoded as a 12x8x8 tensor (each piece type in its own channel).
-- **Move Encoding**: Moves are encoded as one-hot vectors.
-- **Dual Branch Design**:  
-  - **Convolutional Branch**: Processes board state through a series of convolutions and normalization layers.
-  - **Fully-Connected Branch**: Processes the move vector.
-- **Fusion Layer**: Concatenates the board and move features and outputs a single evaluation score.
+### 🔍 Monte Carlo Tree Search (MCTS)
+1. **Selection** → The AI selects a promising move using the PUCT formula.
+2. **Expansion** → Adds new moves to the tree.
+3. **Evaluation** → Uses ChessDQN to assign a score to each move.
+4. **Backpropagation** → Updates statistics up the search tree.
 
-### Self-Play Training & Alternating First-Mover Strategy
+### 🎭 Minimax with Alpha-Beta Pruning
+- **Minimax Search** recursively evaluates all legal moves.
+- **Alpha-Beta Pruning** reduces search complexity, ignoring unpromising branches.
+- **Multi-threading support** speeds up computations.
 
-- **Self-Play**: Two agents (white and black) play against each other.  
-- **Alternation**: Each game alternates the first mover, so one game the white agent starts (playing as white), the next the black agent starts.
-- **First-Mover Stats**:  
-  - Records how many times each agent started the game, wins and losses when they started.
+### 🔁 Alternating First-Mover Training
+- In self-play, the **first player alternates every game**.
+- Records **first-mover win/loss rates** to **track training fairness**.
 
-### Search Algorithms: MCTS and Minimax
-
-- **Monte Carlo Tree Search (MCTS)**:  
-  - **Selection**: Uses PUCT to balance exploration and exploitation.
-  - **Expansion**: Adds child nodes at leaf nodes.
-  - **Evaluation**: Uses ChessDQN to evaluate new nodes.
-  - **Backpropagation**: Updates statistics up the tree.
-- **Minimax Search with Alpha-Beta Pruning**:  
-  - Recursively evaluates moves with a fixed search depth.
-  - Uses multi-threading to parallelize evaluation, reducing search time.
-
-### File Recovery and Consistency Checks
-
-- **Consistency Checks**: On startup and exit, the program compares file sizes for white, black, and master files.
-- **Repair Mechanism**:  
-  - The largest file is considered the best (most trained) and is used to repair smaller, outdated versions.
-- **Automated Recovery**: If a file is corrupt or missing, the program recovers it from available data.
+### 🛠️ File Recovery System
+- Automatically **detects corrupt or outdated files**.
+- **Merges or repairs models** using the **largest available file**.
 
 ---
 
 ## Installation
 
-1. **Clone the Repository**  
-   ```bash
-   git clone https://github.com/yourusername/UltraPoweredHybridChessAITrainer.git
-   cd UltraPoweredHybridChessAITrainer
+### 🖥️ System Requirements
+- **Windows 11 / Linux** (Tested on Windows 11 with Anaconda)
+- **Python 3.8+** (Recommended: Anaconda Environment)
+- **NVIDIA GPU** (for CUDA acceleration) or **High-Core CPU** (for parallel processing)
+
+### 📦 Install Dependencies
+Run the following commands:
+
+```bash
+# Create and activate a Python environment
+conda create -n chessai python=3.8
+conda activate chessai
+
+# Install necessary libraries
+pip install torch torchvision torchaudio chess matplotlib psutil
+```
+
+If using **GPU acceleration**, install PyTorch with CUDA:
+
+```bash
+conda install pytorch torchvision torchaudio cudatoolkit=11.3 -c pytorch
+```
+
+### 🔄 Running the Program
+
+Run the AI trainer:
+
+```bash
+python MasterAIChess.py
+```
+
+---
+
+## Usage Instructions
+
+### 📌 Main Menu Options
+When you start the program, you can select from these modes:
+
+1️⃣ **Self-Play Training (Faster)** - No board animation, pure AI training.  
+2️⃣ **Self-Play Training (Slower)** - AI vs AI with a visual board.  
+3️⃣ **Human vs AI (Graphical)** - Play against the AI with a GUI.  
+4️⃣ **Toggle Debug Logging** - Enables extended debug information.  
+❌ **Quit** - Exit the program and save all training data.
+
+---
+
+## Hyperparameter Configuration
+
+| Parameter | Default Value | Effect |
+|-----------|--------------|--------|
+| `LEARNING_RATE` | `1e-3` | Higher = faster learning, but may overfit |
+| `BATCH_SIZE` | `256` | Larger batch = more efficient but higher RAM usage |
+| `EPOCHS_PER_GAME` | `5` | More epochs = better training per game |
+| `EPS_START` | `1.0` | Initial exploration rate (random moves) |
+| `EPS_DECAY` | `0.99999` | Decay rate for exploration |
+| `USE_MCTS` | `True` | Enables Monte Carlo Tree Search |
+| `MCTS_SIMULATIONS` | `2000` | More simulations = deeper search but slower moves |
+| `MOVE_TIME_LIMIT` | `300.0` sec | Maximum time AI can spend per move |
+| `SAVE_INTERVAL_SECONDS` | `60` | Frequency of model auto-saving |
+
+These parameters can be adjusted in `MasterAIChess.py` to suit different hardware.
+
+---
+
+## File Structure
+
+| File | Description |
+|------|------------|
+| `MasterAIChess.py` | Main program file |
+| `white_dqn.pt` | Model file for white agent |
+| `black_dqn.pt` | Model file for black agent |
+| `master_dqn.pt` | Master model (merged) |
+| `stats.pkl` | Training statistics file |
+| `logs/error_log.txt` | Logs any errors that occur |
+
+---
+
+## System Performance Monitoring
+
+**Displays real-time system stats:**
+- **CPU Usage (%)** - Helps identify bottlenecks.
+- **RAM Usage (CPU & GPU)** - Ensures memory is not overloaded.
+- **Average Time per Move** - Shows AI decision efficiency.
+
+---
+
+## Troubleshooting
+
+### ❌ `ModuleNotFoundError: No module named 'psutil'`
+Install missing dependency:
+```bash
+pip install psutil
+```
+
+### ❌ AI Makes Random Moves
+If the AI is making **random moves**, **increase MCTS simulations** or **train for more games**.
+
+### ❌ Program Crashes on Exit
+Ensure all models are saved before quitting:
+```bash
+python MasterAIChess.py --save
+```
+
+---
+
+## Contributing
+
+You are welcome to contribute improvements! Fork the repository, make changes, and submit a **pull request**.
+
+---
+
+## License
+
+This project is licensed under the **MIT License**.

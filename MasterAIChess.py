@@ -212,7 +212,7 @@ def check_and_repair_all_files():
 # =============================================================================
 import logging
 logging.basicConfig(
-    filename="error_log.txt",
+    filename="Logs.txt",
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'

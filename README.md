@@ -153,7 +153,6 @@ These parameters can be adjusted in `MasterAIChess.py` to suit different hardwar
 ## System Performance Monitoring
 
 **Displays real-time system stats:**
-- **CPU Usage (%)** - Helps identify bottlenecks.
 - **RAM Usage (CPU & GPU)** - Ensures memory is not overloaded.
 - **Average Time per Move** - Shows AI decision efficiency.
 

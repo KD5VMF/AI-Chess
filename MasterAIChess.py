@@ -19,6 +19,8 @@ About:
     number of epochs, and the number of MCTS simulations are increased for maximum performance.
 ===============================================================================
 """
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
 
 import os
 import sys

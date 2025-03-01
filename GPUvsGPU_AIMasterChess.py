@@ -22,25 +22,11 @@ About:
 """
 
 import os
-# Automatically set environment variable to work around the OpenMP duplicate runtime error.
 os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
 
-import sys
-import time
-import math
-import random
-import pickle
-import warnings
-import threading
-import concurrent.futures
-import atexit
-import psutil  # For retrieving system memory usage
-
+import sys, time, math, random, pickle, warnings, threading, concurrent.futures, atexit, psutil
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import chess
+import torch, torch.nn as nn, torch.optim as optim, chess
 import matplotlib.pyplot as plt
 from matplotlib import animation
 from matplotlib.widgets import Button
@@ -66,13 +52,12 @@ def format_file_size(size_bytes):
         return "0 B"
     units = ["B", "KB", "MB", "GB", "TB"]
     index = 0
-    while size_bytes >= 1024 and index < len(units) - 1:
+    while size_bytes >= 1024 and index < len(units)-1:
         size_bytes /= 1024.0
         index += 1
     return f"{size_bytes:,.1f} {units[index]}"
 
 def get_training_mode():
-    # This returns the global default device (used only if not in multi-GPU mode)
     if device.type == "cuda":
         if use_amp:
             return f"GPU-Tensor (AMP enabled) - {torch.cuda.get_device_name(device)}"
@@ -85,16 +70,73 @@ def get_training_mode():
 # Global Configurations and Setup
 # =============================================================================
 warnings.filterwarnings("ignore", message=".*dpi.*")
-EXTENDED_DEBUG = False  # Toggle extended debug logging
-use_amp = False         # Global flag (used if single-GPU mode)
-
-# Global master variables (to merge data across agents)
+EXTENDED_DEBUG = False
+use_amp = False
 MASTER_MODEL_RAM = None  
 MASTER_TABLE_RAM = {}
 master_lock = threading.Lock()
-
-# Global training start time
 training_active_start_time = None
+
+# =============================================================================
+# MCTS Search Function (Defined before use)
+# =============================================================================
+def mcts_search(root_board, neural_agent, num_simulations=2000):
+    class MCTSNode:
+        def __init__(self, board, parent=None, move=None):
+            self.board = board
+            self.parent = parent
+            self.move = move
+            self.children = {}
+            self.visits = 0
+            self.total_value = 0.0
+            self.prior = 1.0
+        def is_leaf(self):
+            return len(self.children) == 0
+        def puct_score(self, c_param=1.4):
+            q_value = self.total_value / self.visits if self.visits > 0 else 0
+            u_value = c_param * self.prior * math.sqrt(self.parent.visits) / (1 + self.visits) if self.parent else 0
+            return q_value + u_value
+
+    root = MCTSNode(root_board.copy())
+    legal_moves = list(root.board.legal_moves)
+    for move in legal_moves:
+        new_board = root.board.copy()
+        new_board.push(move)
+        child = MCTSNode(new_board, parent=root, move=move)
+        child.prior = 1.0 / len(legal_moves)
+        root.children[move] = child
+
+    for sim in range(num_simulations):
+        node = root
+        search_path = [node]
+        while not node.is_leaf() and not node.board.is_game_over():
+            node = max(node.children.values(), key=lambda n: n.puct_score())
+            search_path.append(node)
+        if not node.board.is_game_over():
+            legal_moves = list(node.board.legal_moves)
+            if legal_moves:
+                for move in legal_moves:
+                    new_board = node.board.copy()
+                    new_board.push(move)
+                    child = MCTSNode(new_board, parent=node, move=move)
+                    child.prior = 1.0 / len(legal_moves)
+                    node.children[move] = child
+            value = neural_agent.evaluate_board(node.board)
+            leaf_value = value
+        else:
+            result = node.board.result()
+            if result == "1-0":
+                leaf_value = 1
+            elif result == "0-1":
+                leaf_value = -1
+            else:
+                leaf_value = 0
+        for n in reversed(search_path):
+            n.visits += 1
+            n.total_value += leaf_value
+            leaf_value = -leaf_value
+    best_move = max(root.children.items(), key=lambda item: item[1].visits)[0]
+    return best_move
 
 # =============================================================================
 # Helper Functions for File Loading and Repair
@@ -189,40 +231,34 @@ console_handler.setFormatter(formatter)
 logging.getLogger().addHandler(console_handler)
 
 # =============================================================================
-# Hyperparameters & File Paths (Optimized for High-Power Machines)
+# Hyperparameters & File Paths
 # =============================================================================
 STATE_SIZE = 768
 MOVE_SIZE = 128
 INPUT_SIZE = STATE_SIZE + MOVE_SIZE
-
 LEARNING_RATE = 1e-3
 BATCH_SIZE = 256
 EPOCHS_PER_GAME = 5
-
 EPS_START = 1.0
 EPS_END = 0.05
 EPS_DECAY = 0.99999
-
 USE_MCTS = True
 MCTS_SIMULATIONS = 2000
 MCTS_EXPLORATION_PARAM = 1.4
 MOVE_TIME_LIMIT = 300.0
 INITIAL_CLOCK = 600.0
 SAVE_INTERVAL_SECONDS = 60
-
 MODEL_SAVE_PATH_WHITE = "white_dqn.pt"
 MODEL_SAVE_PATH_BLACK = "black_dqn.pt"
 TABLE_SAVE_PATH_WHITE = "white_transposition.pkl"
 TABLE_SAVE_PATH_BLACK = "black_transposition.pkl"
 STATS_FILE = "stats.pkl"
-
 MASTER_MODEL_SAVE_PATH = "master_dqn.pt"
 MASTER_TABLE_SAVE_PATH = "master_transposition.pkl"
 
 # =============================================================================
 # Device Selection (Default Single GPU)
 # =============================================================================
-# In single GPU mode we use the global device variables.
 if torch.cuda.is_available():
     device = torch.device("cuda:0")
     gpu_name = torch.cuda.get_device_name(device)
@@ -308,7 +344,7 @@ def move_to_tensor(move):
 # =============================================================================
 def minimax_recursive(board, depth, alpha, beta, maximizing, agent_white, agent_black, end_time):
     if time.time() > end_time or depth == 0 or board.is_game_over():
-        return agent_white.evaluate_board(board) if board.turn == chess.WHITE else agent_black.evaluate_board(board)
+        return agent_white.evaluate_board(board) if board.turn==chess.WHITE else agent_black.evaluate_board(board)
     if maximizing:
         best_value = -math.inf
         for move in board.legal_moves:
@@ -335,8 +371,8 @@ def minimax_recursive(board, depth, alpha, beta, maximizing, agent_white, agent_
 def minimax_with_time(board, depth, alpha, beta, maximizing, agent_white, agent_black, end_time):
     if board.is_game_over():
         result = board.result()
-        if result == "1-0": return 1, None
-        elif result == "0-1": return -1, None
+        if result=="1-0": return 1, None
+        elif result=="0-1": return -1, None
         else: return 0, None
     legal_moves = list(board.legal_moves)
     if not legal_moves: return 0, None
@@ -347,8 +383,7 @@ def minimax_with_time(board, depth, alpha, beta, maximizing, agent_white, agent_
         for move in legal_moves:
             board.push(move)
             board_copy = board.copy()
-            future = executor.submit(minimax_recursive, board_copy, depth-1, alpha, beta,
-                                      not maximizing, agent_white, agent_black, end_time)
+            future = executor.submit(minimax_recursive, board_copy, depth-1, alpha, beta, not maximizing, agent_white, agent_black, end_time)
             future_to_move[future] = move
             board.pop()
         for future in concurrent.futures.as_completed(future_to_move):
@@ -362,7 +397,6 @@ def minimax_with_time(board, depth, alpha, beta, maximizing, agent_white, agent_
                 best_value = value; best_move = move; alpha = max(alpha, best_value)
             elif not maximizing and value < best_value:
                 best_value = value; best_move = move; beta = min(beta, best_value)
-    # Synchronize all CUDA devices (if any) without specifying device
     if torch.cuda.is_available():
         torch.cuda.synchronize()
     return best_value, best_move
@@ -370,15 +404,15 @@ def minimax_with_time(board, depth, alpha, beta, maximizing, agent_white, agent_
 # =============================================================================
 # Unicode Mapping for Board Display and Famous Moves Bonuses
 # =============================================================================
-piece_unicode = {'P': '♙', 'N': '♘', 'B': '♗', 'R': '♖', 'Q': '♕', 'K': '♔',
-                 'p': '♟', 'n': '♞', 'b': '♝', 'r': '♜', 'q': '♛', 'k': '♚'}
+piece_unicode = {'P':'♙','N':'♘','B':'♗','R':'♖','Q':'♕','K':'♔',
+                 'p':'♟','n':'♞','b':'♝','r':'♜','q':'♛','k':'♚'}
 piece_unicode_gui = piece_unicode.copy()
-FAMOUS_MOVES = {"Qf6": 100, "Bd6": 120, "Rxd4": 110, "Nf4": 90, "Qg2": 130,
-                "Qh5": 70, "Bxh6": 110, "Rxf7": 140, "Bxf7+": 150, "Nxd5": 80,
-                "Qd8+": 100, "Bc4": 75, "Qe6": 90, "Rf8#": 1000, "Bf7#": 1000,
-                "Rxf8#": 1000, "Nf6+": 95, "Qd6": 80, "Bxe6": 100, "Qe7": 85,
-                "Rd8": 80, "Qg4": 90, "Qh6": 95, "Rc8": 70, "Qd4": 85, "Rd6": 90,
-                "Bf5": 95, "Rxd5": 100, "Nxe5": 110}
+FAMOUS_MOVES = {"Qf6":100, "Bd6":120, "Rxd4":110, "Nf4":90, "Qg2":130,
+                "Qh5":70, "Bxh6":110, "Rxf7":140, "Bxf7+":150, "Nxd5":80,
+                "Qd8+":100, "Bc4":75, "Qe6":90, "Rf8#":1000, "Bf7#":1000,
+                "Rxf8#":1000, "Nf6+":95, "Qd6":80, "Bxe6":100, "Qe7":85,
+                "Rd8":80, "Qg4":90, "Qh6":95, "Rc8":70, "Qd4":85, "Rd6":90,
+                "Bf5":95, "Rxd5":100, "Nxe5":110}
 
 # =============================================================================
 # StatsManager Class
@@ -392,42 +426,42 @@ class StatsManager:
             try:
                 with open(self.filename, "rb") as f:
                     data = pickle.load(f)
-                self.wins_white = data.get("wins_white", 0)
-                self.wins_black = data.get("wins_black", 0)
-                self.draws = data.get("draws", 0)
-                self.total_games = data.get("total_games", 0)
-                self.global_move_count = data.get("global_move_count", 0)
-                self.accumulated_training_time = data.get("accumulated_training_time", 0)
-                self.first_mover_stats = data.get("first_mover_stats", {
-                    "white": {"first_count": 0, "wins_when_first": 0, "losses_when_first": 0},
-                    "black": {"first_count": 0, "wins_when_first": 0, "losses_when_first": 0}
+                self.wins_white = data.get("wins_white",0)
+                self.wins_black = data.get("wins_black",0)
+                self.draws = data.get("draws",0)
+                self.total_games = data.get("total_games",0)
+                self.global_move_count = data.get("global_move_count",0)
+                self.accumulated_training_time = data.get("accumulated_training_time",0)
+                self.first_mover_stats = data.get("first_mover_stats",{
+                    "white":{"first_count":0,"wins_when_first":0,"losses_when_first":0},
+                    "black":{"first_count":0,"wins_when_first":0,"losses_when_first":0}
                 })
                 logging.debug("Stats loaded successfully.")
             except Exception as e:
                 logging.error(f"Error loading stats: {e}. Initializing new stats.")
                 self.wins_white = self.wins_black = self.draws = self.total_games = self.global_move_count = self.accumulated_training_time = 0
-                self.first_mover_stats = {"white": {"first_count": 0, "wins_when_first": 0, "losses_when_first": 0},
-                                           "black": {"first_count": 0, "wins_when_first": 0, "losses_when_first": 0}}
+                self.first_mover_stats = {"white":{"first_count":0,"wins_when_first":0,"losses_when_first":0},
+                                          "black":{"first_count":0,"wins_when_first":0,"losses_when_first":0}}
         else:
             self.wins_white = self.wins_black = self.draws = self.total_games = self.global_move_count = self.accumulated_training_time = 0
-            self.first_mover_stats = {"white": {"first_count": 0, "wins_when_first": 0, "losses_when_first": 0},
-                                       "black": {"first_count": 0, "wins_when_first": 0, "losses_when_first": 0}}
+            self.first_mover_stats = {"white":{"first_count":0,"wins_when_first":0,"losses_when_first":0},
+                                      "black":{"first_count":0,"wins_when_first":0,"losses_when_first":0}}
     def save_stats(self):
-        data = {"wins_white": self.wins_white, "wins_black": self.wins_black, "draws": self.draws,
-                "total_games": self.total_games, "global_move_count": self.global_move_count,
-                "accumulated_training_time": self.accumulated_training_time,
-                "first_mover_stats": self.first_mover_stats}
+        data = {"wins_white":self.wins_white,"wins_black":self.wins_black,"draws":self.draws,
+                "total_games":self.total_games,"global_move_count":self.global_move_count,
+                "accumulated_training_time":self.accumulated_training_time,
+                "first_mover_stats":self.first_mover_stats}
         try:
-            with open(self.filename, "wb") as f:
-                pickle.dump(data, f)
+            with open(self.filename,"wb") as f:
+                pickle.dump(data,f)
             logging.debug("Stats saved successfully.")
         except Exception as e:
             logging.error(f"Error saving stats: {e}")
     def record_result(self, result_str):
         self.total_games += 1
-        if result_str == "1-0":
+        if result_str=="1-0":
             self.wins_white += 1
-        elif result_str == "0-1":
+        elif result_str=="0-1":
             self.wins_black += 1
         else:
             self.draws += 1
@@ -440,26 +474,26 @@ stats_manager = StatsManager()
 def update_training_time():
     global training_active_start_time
     if training_active_start_time is not None:
-        elapsed = time.time() - training_active_start_time
+        elapsed = time.time()-training_active_start_time
         stats_manager.accumulated_training_time += elapsed
         training_active_start_time = time.time()
         logging.debug(f"Updated training time by {elapsed:.2f} seconds.")
 def get_total_training_time():
     if training_active_start_time is not None:
-        return stats_manager.accumulated_training_time + (time.time() - training_active_start_time)
+        return stats_manager.accumulated_training_time + (time.time()-training_active_start_time)
     else:
         return stats_manager.accumulated_training_time
 def print_ascii_stats(stats):
-    os.system('cls' if os.name == 'nt' else 'clear')
+    os.system('cls' if os.name=='nt' else 'clear')
     model_paths = [MODEL_SAVE_PATH_WHITE, MODEL_SAVE_PATH_BLACK, MASTER_MODEL_SAVE_PATH]
     largest_model_path = max(model_paths, key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0)
     largest_model_size = os.path.getsize(largest_model_path) if os.path.exists(largest_model_path) else 0
     table_paths = [TABLE_SAVE_PATH_WHITE, TABLE_SAVE_PATH_BLACK, MASTER_TABLE_SAVE_PATH]
     largest_table_path = max(table_paths, key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0)
     largest_table_size = os.path.getsize(largest_table_path) if os.path.exists(largest_table_path) else 0
-    print("=" * 60)
+    print("="*60)
     print("         ULTRA-POWERED HYBRID CHESS AI TRAINER STATS          ")
-    print("=" * 60)
+    print("="*60)
     print(f" Games:         {stats.total_games}")
     print(f" White Wins:    {stats.wins_white}")
     print(f" Black Wins:    {stats.wins_black}")
@@ -475,25 +509,19 @@ def print_ascii_stats(stats):
     if stats.total_games > 0:
         avg_moves = stats.global_move_count / stats.total_games
         avg_game_time = stats.accumulated_training_time / stats.total_games
-        games_per_hour = (stats.total_games / (stats.accumulated_training_time / 3600)
-                          if stats.accumulated_training_time > 0 else 0)
+        games_per_hour = (stats.total_games / (stats.accumulated_training_time/3600)
+                          if stats.accumulated_training_time>0 else 0)
     else:
         avg_moves = avg_game_time = games_per_hour = 0
     print(f" Avg Moves/Game: {avg_moves:.1f}")
     print(f" Avg Time/Game:  {avg_game_time:.1f} s")
     print(f" Games/Hour:     {games_per_hour:.2f}")
     print(f" Training on:    {get_training_mode()}")
-    if torch.cuda.is_available():
-        allocated = torch.cuda.memory_allocated()
-        reserved = torch.cuda.memory_reserved()
-        print(f"GPU RAM Allocated: {format_file_size(allocated)}, Reserved: {format_file_size(reserved)}")
-    else:
-        mem = psutil.virtual_memory()
-        print(f"RAM Used: {format_file_size(mem.used)} / {format_file_size(mem.total)} ({mem.percent}% used)")
+    # Removed the global GPU RAM display (since it does not reflect multi-GPU usage)
     print("\n First Mover Stats:")
     print(f"  WHITE as first: Played {stats.first_mover_stats['white']['first_count']} times, Wins: {stats.first_mover_stats['white']['wins_when_first']}, Losses: {stats.first_mover_stats['white']['losses_when_first']}")
     print(f"  BLACK as first: Played {stats.first_mover_stats['black']['first_count']} times, Wins: {stats.first_mover_stats['black']['wins_when_first']}, Losses: {stats.first_mover_stats['black']['losses_when_first']}")
-    print("=" * 60)
+    print("="*60)
     print("All files are verified as good.")
 
 # =============================================================================
@@ -504,11 +532,13 @@ def merge_state_dicts(state_dict1, state_dict2):
     all_keys = set(state_dict1.keys()).union(set(state_dict2.keys()))
     for key in all_keys:
         if key in state_dict1 and key in state_dict2:
-            merged[key] = (state_dict1[key] + state_dict2[key]) / 2.0
+            t1 = state_dict1[key].cpu()
+            t2 = state_dict2[key].cpu()
+            merged[key] = (t1 + t2) / 2.0
         elif key in state_dict1:
-            merged[key] = state_dict1[key]
+            merged[key] = state_dict1[key].cpu()
         else:
-            merged[key] = state_dict2[key]
+            merged[key] = state_dict2[key].cpu()
     return merged
 
 def merge_transposition_tables(table1, table2):
@@ -576,7 +606,6 @@ def load_master_into_agent(agent):
     global MASTER_MODEL_RAM, MASTER_TABLE_RAM
     if MASTER_MODEL_RAM is not None:
         try:
-            # Move master model from CPU to agent's device
             agent.policy_net.load_state_dict(MASTER_MODEL_RAM)
             agent.policy_net.to(agent.device)
         except Exception as e:
@@ -673,9 +702,6 @@ def initial_master_sync():
         logging.error("Initial sync: No master table file found. Recovery attempted from agents.")
     check_and_repair_all_files()
 
-# =============================================================================
-# Finalization Routine on Exit
-# =============================================================================
 def finalize_engine():
     check_and_repair_all_files()
     flush_master_to_disk()
@@ -702,9 +728,8 @@ def background_saver(agent_white, agent_black, stats_manager):
             logging.error(f"Background saver error: {e}")
 
 # =============================================================================
-# ChessAgent Class: Core Agent for Self-Play
+# ChessAgent Class: Core Agent for Self-Play (with per-agent device settings)
 # =============================================================================
-# Modified to accept per-agent device and use_amp parameters.
 class ChessAgent:
     def __init__(self, name, model_path, table_path, device=None, use_amp_flag=None):
         self.name = name
@@ -747,11 +772,9 @@ class ChessAgent:
         else:
             self.transposition_table = {}
         self.table_lock = threading.Lock()
-
     def save_model(self):
         torch.save(self.policy_net.state_dict(), self.model_path)
         logging.debug(f"{self.name} model saved to {self.model_path}.")
-
     def save_transposition_table(self):
         with self.table_lock:
             table_copy = dict(self.transposition_table)
@@ -761,7 +784,6 @@ class ChessAgent:
             logging.debug(f"{self.name} transposition table saved to {self.table_path}.")
         except Exception as e:
             logging.error(f"Error saving transposition table for {self.name}: {e}")
-
     def evaluate_board(self, board):
         fen = board.fen()
         with self.table_lock:
@@ -780,7 +802,6 @@ class ChessAgent:
         with self.table_lock:
             self.transposition_table[fen] = value
         return value
-
     def evaluate_candidate_move(self, board, move):
         move_san = board.san(move)
         move_san_clean = move_san.replace("!", "").replace("?", "")
@@ -789,10 +810,9 @@ class ChessAgent:
         score = self.evaluate_board(board)
         board.pop()
         return score + bonus
-
     def select_move(self, board, opponent_agent):
         is_white_turn = board.turn == chess.WHITE
-        if (self.name == "white" and is_white_turn) or (self.name == "black" and not is_white_turn):
+        if (self.name=="white" and is_white_turn) or (self.name=="black" and not is_white_turn):
             state_vector = board_to_tensor(board)
             dummy_move = np.zeros(MOVE_SIZE, dtype=np.float32)
             self.game_memory.append(np.concatenate([state_vector, dummy_move]))
@@ -810,31 +830,29 @@ class ChessAgent:
             else:
                 end_time = time.time() + MOVE_TIME_LIMIT
                 _, best_move = minimax_with_time(board, depth=5, alpha=-math.inf, beta=math.inf,
-                                                 maximizing=(board.turn == chess.WHITE),
-                                                 agent_white=(self if board.turn == chess.WHITE else opponent_agent),
-                                                 agent_black=(self if board.turn == chess.BLACK else opponent_agent),
+                                                 maximizing=(board.turn==chess.WHITE),
+                                                 agent_white=(self if board.turn==chess.WHITE else opponent_agent),
+                                                 agent_black=(self if board.turn==chess.BLACK else opponent_agent),
                                                  end_time=end_time)
                 return best_move
-
     def iterative_deepening(self, board, opponent_agent):
         end_time = time.time() + MOVE_TIME_LIMIT
         best_move = None
         depth = 1
         while depth <= 5 and time.time() < end_time:
-            val, mv = minimax_with_time(board, depth, -math.inf, math.inf, board.turn == chess.WHITE,
-                                        agent_white=(self if board.turn == chess.WHITE else opponent_agent),
-                                        agent_black=(self if board.turn == chess.BLACK else opponent_agent),
+            val, mv = minimax_with_time(board, depth, -math.inf, math.inf, board.turn==chess.WHITE,
+                                        agent_white=(self if board.turn==chess.WHITE else opponent_agent),
+                                        agent_black=(self if board.turn==chess.BLACK else opponent_agent),
                                         end_time=end_time)
             if mv is not None:
                 best_move = mv
             depth += 1
         return best_move
-
     def train_after_game(self, result):
         if not self.game_memory:
             return
         arr_states = np.array(self.game_memory, dtype=np.float32)
-        arr_labels = np.array([result] * len(self.game_memory), dtype=np.float32).reshape(-1, 1)
+        arr_labels = np.array([result]*len(self.game_memory), dtype=np.float32).reshape(-1,1)
         st_tensor = torch.tensor(arr_states, device=self.device)
         lb_tensor = torch.tensor(arr_labels, device=self.device)
         dataset_size = len(st_tensor)
@@ -947,7 +965,7 @@ class GUIChessAgent:
         else:
             end_time = time.time() + MOVE_TIME_LIMIT
             _, best_move = minimax_with_time(board, depth=5, alpha=-math.inf, beta=math.inf,
-                                             maximizing=(board.turn == self.ai_is_white),
+                                             maximizing=(board.turn==self.ai_is_white),
                                              agent_white=self,
                                              agent_black=self,
                                              end_time=end_time)
@@ -957,7 +975,7 @@ class GUIChessAgent:
         best_move = None
         depth = 1
         while depth <= 5 and time.time() < end_time:
-            val, mv = minimax_with_time(board, depth, -math.inf, math.inf, board.turn == self.ai_is_white,
+            val, mv = minimax_with_time(board, depth, -math.inf, math.inf, board.turn==self.ai_is_white,
                                         agent_white=self, agent_black=self, end_time=end_time)
             if mv is not None:
                 best_move = mv
@@ -967,7 +985,7 @@ class GUIChessAgent:
         if not self.game_memory:
             return
         s_np = np.array(self.game_memory, dtype=np.float32)
-        l_np = np.array([result] * len(self.game_memory), dtype=np.float32).reshape(-1, 1)
+        l_np = np.array([result]*len(self.game_memory), dtype=np.float32).reshape(-1,1)
         st_tensor = torch.tensor(s_np, device=self.device)
         lb_tensor = torch.tensor(l_np, device=self.device)
         dataset_size = len(st_tensor)
@@ -996,150 +1014,19 @@ class GUIChessAgent:
         logging.debug("GUI agent trained after game.")
 
 # =============================================================================
-# MCTS Search Function
-# =============================================================================
-class MCTSNode:
-    def __init__(self, board, parent=None, move=None):
-        self.board = board
-        self.parent = parent
-        self.move = move  
-        self.children = {}
-        self.visits = 0
-        self.total_value = 0.0
-        self.prior = 1.0
-    def is_leaf(self):
-        return len(self.children) == 0
-    def puct_score(self, c_param=MCTS_EXPLORATION_PARAM):
-        q_value = self.total_value / self.visits if self.visits > 0 else 0
-        u_value = c_param * self.prior * math.sqrt(self.parent.visits) / (1 + self.visits) if self.parent else 0
-        return q_value + u_value
-
-def mcts_search(root_board, neural_agent, num_simulations=MCTS_SIMULATIONS):
-    logging.debug("Starting MCTS search...")
-    root = MCTSNode(root_board.copy())
-    legal_moves = list(root.board.legal_moves)
-    for move in legal_moves:
-        new_board = root.board.copy()
-        new_board.push(move)
-        child = MCTSNode(new_board, parent=root, move=move)
-        child.prior = 1.0 / len(legal_moves)
-        root.children[move] = child
-    logging.debug(f"Root expanded with {len(legal_moves)} moves.")
-    for sim in range(num_simulations):
-        node = root
-        search_path = [node]
-        while not node.is_leaf() and not node.board.is_game_over():
-            node = max(node.children.values(), key=lambda n: n.puct_score())
-            search_path.append(node)
-        if not node.board.is_game_over():
-            legal_moves = list(node.board.legal_moves)
-            if legal_moves:
-                for move in legal_moves:
-                    new_board = node.board.copy()
-                    new_board.push(move)
-                    child = MCTSNode(new_board, parent=node, move=move)
-                    child.prior = 1.0 / len(legal_moves)
-                    node.children[move] = child
-            value = neural_agent.evaluate_board(node.board)
-            leaf_value = value
-        else:
-            result = node.board.result()
-            if result == "1-0":
-                leaf_value = 1
-            elif result == "0-1":
-                leaf_value = -1
-            else:
-                leaf_value = 0
-        for n in reversed(search_path):
-            n.visits += 1
-            n.total_value += leaf_value
-            leaf_value = -leaf_value
-        if sim % 100 == 0:
-            logging.debug(f"MCTS simulation {sim} complete.")
-    best_move = max(root.children.items(), key=lambda item: item[1].visits)[0]
-    logging.debug("MCTS search complete.")
-    return best_move
-
-# =============================================================================
-# Self-Play Training Mode (Fast, No Animation)
-# =============================================================================
-def self_play_training_faster():
-    # This mode uses the global device settings (single GPU or CPU).
-    global training_active_start_time
-    agent_white = ChessAgent("white", MODEL_SAVE_PATH_WHITE, TABLE_SAVE_PATH_WHITE)
-    agent_black = ChessAgent("black", MODEL_SAVE_PATH_BLACK, TABLE_SAVE_PATH_BLACK)
-    load_master_into_agent(agent_white)
-    load_master_into_agent(agent_black)
-    saver_thread = threading.Thread(target=background_saver, args=(agent_white, agent_black, stats_manager), daemon=True)
-    saver_thread.start()
-    if training_active_start_time is None:
-        training_active_start_time = time.time()
-    game_counter = 0
-    logging.debug("Starting alternating first-mover self-play training loop.")
-    try:
-        while True:
-            board = chess.Board()
-            if game_counter % 2 == 0:
-                first_mover = agent_white
-                second_mover = agent_black
-            else:
-                first_mover = agent_black
-                second_mover = agent_white
-            stats_manager.first_mover_stats[first_mover.name]["first_count"] += 1
-            print(f"Game {game_counter + 1}: {first_mover.name.upper()} is playing as first mover (white).")
-            while not board.is_game_over():
-                if board.turn == chess.WHITE:
-                    current_agent = first_mover; opponent_agent = second_mover
-                else:
-                    current_agent = second_mover; opponent_agent = first_mover
-                move_start = time.time()
-                move = current_agent.select_move(board, opponent_agent)
-                if move is None: break
-                board.push(move)
-                elapsed_time = time.time() - move_start
-                first_mover.clock -= elapsed_time
-                second_mover.clock -= elapsed_time
-                stats_manager.global_move_count += 1
-            result = board.result()
-            if first_mover.name == "white":
-                if result == "1-0":
-                    stats_manager.first_mover_stats["white"]["wins_when_first"] += 1
-                elif result == "0-1":
-                    stats_manager.first_mover_stats["white"]["losses_when_first"] += 1
-            elif first_mover.name == "black":
-                if result == "0-1":
-                    stats_manager.first_mover_stats["black"]["wins_when_first"] += 1
-                elif result == "1-0":
-                    stats_manager.first_mover_stats["black"]["losses_when_first"] += 1
-            if result == "1-0":
-                first_mover.train_after_game(+1); second_mover.train_after_game(-1)
-            elif result == "0-1":
-                first_mover.train_after_game(-1); second_mover.train_after_game(+1)
-            else:
-                first_mover.train_after_game(0); second_mover.train_after_game(0)
-            update_training_time()
-            stats_manager.record_result(result)
-            update_master_in_memory(agent_white, agent_black)
-            print_ascii_stats(stats_manager)
-            outcome_str = "Win" if ((first_mover.name == "white" and result=="1-0") or (first_mover.name=="black" and result=="0-1")) else "Loss" if ((first_mover.name=="white" and result=="0-1") or (first_mover.name=="black" and result=="1-0")) else "Draw"
-            print(f"Game {game_counter + 1} result: First mover ({first_mover.name}) {outcome_str}.")
-            game_counter += 1
-    except KeyboardInterrupt:
-        update_training_time()
-        print("\nTraining interrupted. Returning to main menu...")
-        return
-
-# =============================================================================
 # GPU vs GPU Training Mode
 # =============================================================================
 def gpu_vs_gpu_training(white_device, white_amp, black_device, black_amp):
-    # Create two agents on separate GPUs
     global training_active_start_time
-    agent_white = ChessAgent("white", MODEL_SAVE_PATH_WHITE, TABLE_SAVE_PATH_WHITE, device=white_device, use_amp_flag=white_amp)
-    agent_black = ChessAgent("black", MODEL_SAVE_PATH_BLACK, TABLE_SAVE_PATH_BLACK, device=black_device, use_amp_flag=black_amp)
+    agent_white = ChessAgent("white", MODEL_SAVE_PATH_WHITE, TABLE_SAVE_PATH_WHITE,
+                             device=white_device, use_amp_flag=white_amp)
+    agent_black = ChessAgent("black", MODEL_SAVE_PATH_BLACK, TABLE_SAVE_PATH_BLACK,
+                             device=black_device, use_amp_flag=black_amp)
     load_master_into_agent(agent_white)
     load_master_into_agent(agent_black)
-    saver_thread = threading.Thread(target=background_saver, args=(agent_white, agent_black, stats_manager), daemon=True)
+    saver_thread = threading.Thread(target=background_saver,
+                                    args=(agent_white, agent_black, stats_manager),
+                                    daemon=True)
     saver_thread.start()
     if training_active_start_time is None:
         training_active_start_time = time.time()
@@ -1153,7 +1040,7 @@ def gpu_vs_gpu_training(white_device, white_amp, black_device, black_amp):
             else:
                 first_mover = agent_black; second_mover = agent_white
             stats_manager.first_mover_stats[first_mover.name]["first_count"] += 1
-            print(f"Game {game_counter + 1}: {first_mover.name.upper()} is playing as first mover (white).")
+            print(f"Game {game_counter+1}: {first_mover.name.upper()} is playing as first mover (white).")
             while not board.is_game_over():
                 if board.turn == chess.WHITE:
                     current_agent = first_mover; opponent_agent = second_mover
@@ -1168,19 +1055,15 @@ def gpu_vs_gpu_training(white_device, white_amp, black_device, black_amp):
                 second_mover.clock -= elapsed_time
                 stats_manager.global_move_count += 1
             result = board.result()
-            if first_mover.name == "white":
-                if result == "1-0":
-                    stats_manager.first_mover_stats["white"]["wins_when_first"] += 1
-                elif result == "0-1":
-                    stats_manager.first_mover_stats["white"]["losses_when_first"] += 1
-            elif first_mover.name == "black":
-                if result == "0-1":
-                    stats_manager.first_mover_stats["black"]["wins_when_first"] += 1
-                elif result == "1-0":
-                    stats_manager.first_mover_stats["black"]["losses_when_first"] += 1
-            if result == "1-0":
+            if first_mover.name=="white":
+                if result=="1-0": stats_manager.first_mover_stats["white"]["wins_when_first"] += 1
+                elif result=="0-1": stats_manager.first_mover_stats["white"]["losses_when_first"] += 1
+            elif first_mover.name=="black":
+                if result=="0-1": stats_manager.first_mover_stats["black"]["wins_when_first"] += 1
+                elif result=="1-0": stats_manager.first_mover_stats["black"]["losses_when_first"] += 1
+            if result=="1-0":
                 first_mover.train_after_game(+1); second_mover.train_after_game(-1)
-            elif result == "0-1":
+            elif result=="0-1":
                 first_mover.train_after_game(-1); second_mover.train_after_game(+1)
             else:
                 first_mover.train_after_game(0); second_mover.train_after_game(0)
@@ -1188,19 +1071,21 @@ def gpu_vs_gpu_training(white_device, white_amp, black_device, black_amp):
             stats_manager.record_result(result)
             update_master_in_memory(agent_white, agent_black)
             print_ascii_stats(stats_manager)
-            outcome_str = "Win" if ((first_mover.name == "white" and result=="1-0") or (first_mover.name=="black" and result=="0-1")) else "Loss" if ((first_mover.name=="white" and result=="0-1") or (first_mover.name=="black" and result=="1-0")) else "Draw"
-            print(f"Game {game_counter + 1} result: First mover ({first_mover.name}) {outcome_str}.")
+            # Now print GPU-specific info for GPU vs GPU training:
+            print("\nGPU Devices Info:")
+            print(f"WHITE agent on {torch.cuda.get_device_name(white_device)} (GPU {white_device.index}): "
+                  f"Allocated: {format_file_size(torch.cuda.memory_allocated(white_device))}, "
+                  f"Reserved: {format_file_size(torch.cuda.memory_reserved(white_device))}")
+            print(f"BLACK agent on {torch.cuda.get_device_name(black_device)} (GPU {black_device.index}): "
+                  f"Allocated: {format_file_size(torch.cuda.memory_allocated(black_device))}, "
+                  f"Reserved: {format_file_size(torch.cuda.memory_reserved(black_device))}")
+            outcome_str = "Win" if ((first_mover.name=="white" and result=="1-0") or (first_mover.name=="black" and result=="0-1")) else "Loss" if ((first_mover.name=="white" and result=="0-1") or (first_mover.name=="black" and result=="1-0")) else "Draw"
+            print(f"Game {game_counter+1} result: First mover ({first_mover.name}) {outcome_str}.")
             game_counter += 1
     except KeyboardInterrupt:
         update_training_time()
         print("\nGPU vs GPU Training interrupted. Returning to main menu...")
         return
-
-# =============================================================================
-# Self-Play GUI Mode (AI vs AI with Visuals) and Human vs AI GUI modes remain unchanged.
-# (Omitted here for brevity; they can continue to use the single-GPU global settings.)
-# =============================================================================
-# ... [GUIChessAgent-based classes unchanged] ...
 
 # =============================================================================
 # Main Entry Point
@@ -1212,19 +1097,18 @@ def main():
     print("3: Human vs AI GUI")
     print("4: GPU vs GPU Training")
     mode = input("Enter choice (1/2/3/4): ").strip()
-    if mode == "1":
+    if mode=="1":
         self_play_training_faster()
-    elif mode == "2":
-        # Call SelfPlayGUI (unchanged from original)
+    elif mode=="2":
         from matplotlib import pyplot as plt
         SelfPlayGUI()
-    elif mode == "3":
+    elif mode=="3":
         human_color = input("Do you want to play as White? (y/n): ").strip().lower()
-        human_is_white = True if human_color == "y" else False
+        human_is_white = True if human_color=="y" else False
         from matplotlib import pyplot as plt
         HumanVsAIGUI(human_is_white)
-    elif mode == "4":
-        if not torch.cuda.is_available() or torch.cuda.device_count() < 2:
+    elif mode=="4":
+        if not torch.cuda.is_available() or torch.cuda.device_count()<2:
             print("At least two CUDA devices are required for GPU vs GPU Training.")
             return
         print("Available GPUs:")
@@ -1236,12 +1120,17 @@ def main():
             black_idx = int(input("Enter GPU index for BLACK agent: ").strip())
         except ValueError:
             print("Invalid input. Defaulting to GPU 0 for WHITE and GPU 1 for BLACK.")
-            white_idx = 0; black_idx = 1
+            white_idx, black_idx = 0, 1
         white_device = torch.device(f"cuda:{white_idx}")
         black_device = torch.device(f"cuda:{black_idx}")
         white_gpu_name = torch.cuda.get_device_name(white_idx)
         black_gpu_name = torch.cuda.get_device_name(black_idx)
-        white_amp = False
-        black_amp = False
-        if "RTX" in white_gpu_name.upper():
-            white_amp = True if input("Enable AMP for WHITE agent on GPU {}? (y
+        white_amp = True if ("RTX" in white_gpu_name.upper() and input(f"Enable AMP for WHITE agent on GPU {white_idx}? (y/n): ").strip().lower()=="y") else False
+        black_amp = True if ("RTX" in black_gpu_name.upper() and input(f"Enable AMP for BLACK agent on GPU {black_idx}? (y/n): ").strip().lower()=="y") else False
+        gpu_vs_gpu_training(white_device, white_amp, black_device, black_amp)
+    else:
+        print("Invalid choice.")
+
+if __name__=="__main__":
+    initial_master_sync()
+    main()

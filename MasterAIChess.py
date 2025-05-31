@@ -1,4 +1,3 @@
-
 """
 ===============================================================================
    ULTRA-POWERED HYBRID CHESS AI TRAINER: MASTERING SELF-PLAY THROUGH ALTERNATING
@@ -240,43 +239,44 @@ console_handler.setFormatter(formatter)
 logging.getLogger().addHandler(console_handler)
 
 # =============================================================================
-# Hyperparameters & File Paths (Optimized for High-End Workstations)
+# Hyperparameters & File Paths (Optimized for RTX A400 - 8GB VRAM Workstations)
 # =============================================================================
 STATE_SIZE = 768
 MOVE_SIZE = 128
 INPUT_SIZE = STATE_SIZE + MOVE_SIZE
 
-# LEARNING_RATE is reduced slightly for smoother convergence on deep networks.
-LEARNING_RATE = 5e-4  # More stable learning for complex models
+# LEARNING_RATE tuned for A400 stability and efficiency
+LEARNING_RATE = 7e-4  # Slightly faster convergence, A400 handles this well
 
-# BATCH_SIZE is aggressive but suitable for 12GB VRAM + AMP
-BATCH_SIZE = 256
+# BATCH_SIZE fits inside 8GB VRAM with AMP acceleration
+BATCH_SIZE = 128  # Safe for 8GB VRAM even with complex models
 
-# More EPOCHS_PER_GAME lets it learn more from each self-play game.
-EPOCHS_PER_GAME = 7  # Deeper per-game learning (use your high RAM & CPU power)
+# EPOCHS_PER_GAME balanced for memory and CPU usage
+EPOCHS_PER_GAME = 5  # Enough learning per game without overwhelming memory
 
-# Epsilon-greedy values for a slow and strategic exploration curve
+# Epsilon-greedy schedule: slow, but faster decay than extreme setups
 EPS_START = 1.0
-EPS_END = 0.01       # Even more deterministic later
-EPS_DECAY = 0.999995  # Very slow decay = wide exploration phase
+EPS_END = 0.02         # Slight randomness retained for robustness
+EPS_DECAY = 0.99998    # Gradually shifts to more deterministic play
 
-# Enable MCTS (always should be True for competitive training)
+# Enable MCTS for intelligent decision making
 USE_MCTS = True
 
-# Balanced MCTS depth — powerful, but not extreme
-MCTS_SIMULATIONS = 5000  # Ideal for your hardware, ~6–8 games/hour
+# MCTS depth set for stable search times on A400
+MCTS_SIMULATIONS = 2500  # Half depth compared to bigger GPUs, but still powerful
 
-# Slightly more exploration to help discover non-obvious lines
-MCTS_EXPLORATION_PARAM = 1.6  # Higher c_puct improves exploratory behavior
+# Exploration parameter for MCTS
+MCTS_EXPLORATION_PARAM = 1.4  # Good balance: still curious, less random
 
-# Maximum allowed time for each move (helps late-game searches)
-MOVE_TIME_LIMIT = 300.0  # Still capped at 5 minutes max
+# Maximum move time (adjusted for practical training speeds)
+MOVE_TIME_LIMIT = 180.0  # 3 minutes per move max (helps keep training flowing)
 
-# Total game clock time (not enforced in self-play currently, but useful for GUI/Human modes)
-INITIAL_CLOCK = 900.0  # 15 minutes per side — more realistic for deep eval
+# Total game time (useful if integrating with UI or future GUI)
+INITIAL_CLOCK = 600.0  # 10 minutes per side
 
-# Frequent backup saves to protect long-term progress
-SAVE_INTERVAL_SECONDS = 60  # Keep as-is for resilience
+# Frequent backups to avoid losing progress
+SAVE_INTERVAL_SECONDS = 90  # Save slightly less often (fits A400 speed)
+
 
 # File paths for saving models, transposition tables, and statistics.
 MODEL_SAVE_PATH_WHITE = "white_dqn.pt"

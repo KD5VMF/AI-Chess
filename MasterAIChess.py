@@ -8,18 +8,21 @@ Title: Ultra-Powered Hybrid Chess AI Trainer: Mastering Self-Play Through Altern
 About:
     This advanced chess AI training engine continuously improves a hybrid model using deep learning,
     Monte Carlo Tree Search (MCTS), and multi-threaded minimax search with alpha-beta pruning. To
-    counter the inherent first-move advantage, self-play games alternate which agent starts first 
+    counter the inherent first-move advantage, self-play games alternate which agent starts first
     (the first mover always plays white). Detailed statistics—including win/draw counts, move counts,
-    training time, and first-mover-specific performance—are recorded and displayed. In addition, the 
-    engine robustly monitors and repairs model and transposition table files by comparing file sizes 
+    training time, and first-mover-specific performance—are recorded and displayed. In addition, the
+    engine robustly monitors and repairs model and transposition table files by comparing file sizes
     (to determine which is most trained) and replacing any outdated files with the best available data.
     Finally, system RAM usage is displayed (CPU or GPU) so you can see the resources in use.
-    
+
     This engine is designed to fully leverage high-end hardware. Hyperparameters such as batch size,
     number of epochs, and the number of MCTS simulations are increased for maximum performance.
 ===============================================================================
 """
 import os
+# Set thread usage to physical cores
+os.environ['OMP_NUM_THREADS'] = str(os.cpu_count()//2 or 1)
+
 os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
 
 import warnings
@@ -111,10 +114,10 @@ def get_training_mode():
 # =============================================================================
 warnings.filterwarnings("ignore", message=".*dpi.*")
 EXTENDED_DEBUG = False  # Toggle extended debug logging
-use_amp = False         # Whether to use mixed precision training
+use_amp = torch.cuda.is_available()         # Whether to use mixed precision training
 
 # Global master variables (to merge data across agents)
-MASTER_MODEL_RAM = None  
+MASTER_MODEL_RAM = None
 MASTER_TABLE_RAM = {}
 master_lock = threading.Lock()
 
@@ -239,44 +242,43 @@ console_handler.setFormatter(formatter)
 logging.getLogger().addHandler(console_handler)
 
 # =============================================================================
-# Hyperparameters & File Paths (Optimized for RTX A400 - 8GB VRAM Workstations)
+# Hyperparameters & File Paths (Optimized for High-End Workstations)
 # =============================================================================
 STATE_SIZE = 768
 MOVE_SIZE = 128
 INPUT_SIZE = STATE_SIZE + MOVE_SIZE
 
-# LEARNING_RATE tuned for A400 stability and efficiency
-LEARNING_RATE = 7e-4  # Slightly faster convergence, A400 handles this well
+# LEARNING_RATE is reduced slightly for smoother convergence on deep networks.
+LEARNING_RATE = 5e-4  # More stable learning for complex models
 
-# BATCH_SIZE fits inside 8GB VRAM with AMP acceleration
-BATCH_SIZE = 128  # Safe for 8GB VRAM even with complex models
+# BATCH_SIZE is aggressive but suitable for 12GB VRAM + AMP
+BATCH_SIZE = 512 #256
 
-# EPOCHS_PER_GAME balanced for memory and CPU usage
-EPOCHS_PER_GAME = 5  # Enough learning per game without overwhelming memory
+# More EPOCHS_PER_GAME lets it learn more from each self-play game.
+EPOCHS_PER_GAME = 10 #7  # Deeper per-game learning (use your high RAM & CPU power)
 
-# Epsilon-greedy schedule: slow, but faster decay than extreme setups
+# Epsilon-greedy values for a slow and strategic exploration curve
 EPS_START = 1.0
-EPS_END = 0.02         # Slight randomness retained for robustness
-EPS_DECAY = 0.99998    # Gradually shifts to more deterministic play
+EPS_END = 0.01       # Even more deterministic later
+EPS_DECAY = 0.999995  # Very slow decay = wide exploration phase
 
-# Enable MCTS for intelligent decision making
+# Enable MCTS (always should be True for competitive training)
 USE_MCTS = True
 
-# MCTS depth set for stable search times on A400
-MCTS_SIMULATIONS = 2500  # Half depth compared to bigger GPUs, but still powerful
+# Balanced MCTS depth — powerful, but not extreme
+MCTS_SIMULATIONS = 5000  # Ideal for your hardware, ~6–8 games/hour
 
-# Exploration parameter for MCTS
-MCTS_EXPLORATION_PARAM = 1.4  # Good balance: still curious, less random
+# Slightly more exploration to help discover non-obvious lines
+MCTS_EXPLORATION_PARAM = 1.6  # Higher c_puct improves exploratory behavior
 
-# Maximum move time (adjusted for practical training speeds)
-MOVE_TIME_LIMIT = 180.0  # 3 minutes per move max (helps keep training flowing)
+# Maximum allowed time for each move (helps late-game searches)
+MOVE_TIME_LIMIT = 300.0  # Still capped at 5 minutes max
 
-# Total game time (useful if integrating with UI or future GUI)
-INITIAL_CLOCK = 600.0  # 10 minutes per side
+# Total game clock time (not enforced in self-play currently, but useful for GUI/Human modes)
+INITIAL_CLOCK = 900.0  # 15 minutes per side — more realistic for deep eval
 
-# Frequent backups to avoid losing progress
-SAVE_INTERVAL_SECONDS = 90  # Save slightly less often (fits A400 speed)
-
+# Frequent backup saves to protect long-term progress
+SAVE_INTERVAL_SECONDS = 60  # Keep as-is for resilience
 
 # File paths for saving models, transposition tables, and statistics.
 MODEL_SAVE_PATH_WHITE = "white_dqn.pt"
@@ -319,7 +321,7 @@ else:
             amp_input = input("Your GPU supports Tensor Cores. Enable mixed precision AMP? [y/n]: ").strip().lower()
             use_amp = (amp_input == "y")
         else:
-            use_amp = False
+            use_amp = torch.cuda.is_available()
 
 print(f"Using device: {device}")
 print(f"Mixed precision (AMP) enabled: {use_amp}")
@@ -328,8 +330,10 @@ print(f"Mixed precision (AMP) enabled: {use_amp}")
 # Neural Network Model: ChessDQN
 # =============================================================================
 class ChessDQN(nn.Module):
+    __constants__ = ['STATE_SIZE']
     def __init__(self):
         super(ChessDQN, self).__init__()
+        self.STATE_SIZE = STATE_SIZE
         # Convolutional branch: processes the 12x8x8 board representation.
         self.board_conv = nn.Sequential(
             nn.Conv2d(12, 32, kernel_size=3, padding=1),
@@ -362,8 +366,8 @@ class ChessDQN(nn.Module):
 
     def forward(self, x):
         # Split input vector into board part and move part.
-        board_input = x[:, :STATE_SIZE]
-        move_input = x[:, STATE_SIZE:]
+        board_input = x[:, :self.STATE_SIZE]
+        move_input = x[:, self.STATE_SIZE:]
         board_input = board_input.view(-1, 12, 8, 8)
         board_features = self.board_conv(board_input)
         move_features = self.move_fc(move_input)
@@ -610,7 +614,7 @@ def print_ascii_stats(stats):
     largest file information, training time, and first-mover stats. Also display RAM usage.
     """
     os.system('cls' if os.name == 'nt' else 'clear')
-    
+
     # Determine largest model file among white, black, and master files.
     model_paths = [MODEL_SAVE_PATH_WHITE, MODEL_SAVE_PATH_BLACK, MASTER_MODEL_SAVE_PATH]
     largest_model_path = max(model_paths, key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0)
@@ -912,6 +916,8 @@ class ChessAgent:
         self.model_path = model_path
         self.table_path = table_path
         self.policy_net = ChessDQN().to(device)
+        # JIT-compile policy net for faster inference
+        self.policy_net = torch.jit.script(self.policy_net)
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=LEARNING_RATE)
         self.criterion = nn.MSELoss()
         self.epsilon = EPS_START
@@ -1057,28 +1063,28 @@ class ChessAgent:
             return
         arr_states = np.array(self.game_memory, dtype=np.float32)
         arr_labels = np.array([result] * len(self.game_memory), dtype=np.float32).reshape(-1, 1)
-        st_tensor = torch.tensor(arr_states, device=device)
-        lb_tensor = torch.tensor(arr_labels, device=device)
-        dataset_size = len(st_tensor)
-        indices = np.arange(dataset_size)
+        st_tensor = torch.tensor(arr_states)
+        lb_tensor = torch.tensor(arr_labels)
+
+        # Prepare dataset and DataLoader for overlapping data loading
+        from torch.utils.data import TensorDataset, DataLoader
+        dataset = TensorDataset(st_tensor, lb_tensor)
+        loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True,
+                            pin_memory=True, num_workers=os.cpu_count()//2 or 1)
         scaler = torch.cuda.amp.GradScaler() if use_amp else None
         for _ in range(EPOCHS_PER_GAME):
-            np.random.shuffle(indices)
-            for start_idx in range(0, dataset_size, BATCH_SIZE):
-                batch_indices = indices[start_idx:start_idx+BATCH_SIZE]
-                batch_states = st_tensor[batch_indices]
-                batch_labels = lb_tensor[batch_indices]
+            for batch_states, batch_labels in loader:
+                batch_states = batch_states.to(device, non_blocking=True)
+                batch_labels = batch_labels.to(device, non_blocking=True)
                 self.optimizer.zero_grad()
-                if use_amp:
-                    with torch.amp.autocast(device_type='cuda'):
-                        predictions = self.policy_net(batch_states)
-                        loss = self.criterion(predictions, batch_labels)
+                with torch.cuda.amp.autocast(enabled=use_amp):
+                    outputs = self.policy_net(batch_states)
+                    loss = self.criterion(outputs, batch_labels)
+                if scaler:
                     scaler.scale(loss).backward()
                     scaler.step(self.optimizer)
                     scaler.update()
                 else:
-                    predictions = self.policy_net(batch_states)
-                    loss = self.criterion(predictions, batch_labels)
                     loss.backward()
                     self.optimizer.step()
         self.game_memory = []
@@ -1098,6 +1104,8 @@ class GUIChessAgent:
         self.model_path = MODEL_SAVE_PATH_WHITE if ai_is_white else MODEL_SAVE_PATH_BLACK
         self.table_path = TABLE_SAVE_PATH_WHITE if ai_is_white else TABLE_SAVE_PATH_BLACK
         self.policy_net = ChessDQN().to(device)
+        # JIT-compile policy net for faster inference
+        self.policy_net = torch.jit.script(self.policy_net)
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=LEARNING_RATE)
         self.criterion = nn.MSELoss()
         self.epsilon = 0.1
@@ -1202,26 +1210,26 @@ class GUIChessAgent:
         l_np = np.array([result] * len(self.game_memory), dtype=np.float32).reshape(-1, 1)
         st_tensor = torch.tensor(s_np, device=device)
         lb_tensor = torch.tensor(l_np, device=device)
-        dataset_size = len(st_tensor)
-        indices = np.arange(dataset_size)
+
+        # Prepare dataset and DataLoader for overlapping data loading
+        from torch.utils.data import TensorDataset, DataLoader
+        dataset = TensorDataset(st_tensor, lb_tensor)
+        loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True,
+                            pin_memory=True, num_workers=os.cpu_count()//2 or 1)
         scaler = torch.cuda.amp.GradScaler() if use_amp else None
         for _ in range(EPOCHS_PER_GAME):
-            np.random.shuffle(indices)
-            for start_idx in range(0, dataset_size, BATCH_SIZE):
-                batch_indices = indices[start_idx:start_idx+BATCH_SIZE]
-                batch_states = st_tensor[batch_indices]
-                batch_labels = lb_tensor[batch_indices]
+            for batch_states, batch_labels in loader:
+                batch_states = batch_states.to(device, non_blocking=True)
+                batch_labels = batch_labels.to(device, non_blocking=True)
                 self.optimizer.zero_grad()
-                if use_amp:
-                    with torch.amp.autocast(device_type='cuda'):
-                        predictions = self.policy_net(batch_states)
-                        loss = self.criterion(predictions, batch_labels)
+                with torch.cuda.amp.autocast(enabled=use_amp):
+                    outputs = self.policy_net(batch_states)
+                    loss = self.criterion(outputs, batch_labels)
+                if scaler:
                     scaler.scale(loss).backward()
                     scaler.step(self.optimizer)
                     scaler.update()
                 else:
-                    predictions = self.policy_net(batch_states)
-                    loss = self.criterion(predictions, batch_labels)
                     loss.backward()
                     self.optimizer.step()
         self.game_memory = []
@@ -1234,7 +1242,7 @@ class MCTSNode:
     def __init__(self, board, parent=None, move=None):
         self.board = board
         self.parent = parent
-        self.move = move  
+        self.move = move
         self.children = {}
         self.visits = 0
         self.total_value = 0.0
@@ -1301,7 +1309,7 @@ def mcts_search(root_board, neural_agent, num_simulations=MCTS_SIMULATIONS):
 def self_play_training_faster():
     """
     Fast self-play training mode with alternating first-mover advantage.
-    
+
     The first mover alternates each game so that the agent that starts (plays as white)
     is tracked separately in first-mover statistics:
       - If white is the first mover, a result of "1-0" is a win for the first mover.
@@ -1651,7 +1659,7 @@ class HumanVsAIGUI:
                 mv = chess.Move(self.selected_square, sq)
             if mv in self.board.legal_moves:
                 user_time = time.time() - self.last_click_time
-                self.human_clock -= user_time  
+                self.human_clock -= user_time
                 self.last_click_time = time.time()
                 self.board.push(mv)
                 self.selected_square = None
@@ -1678,7 +1686,7 @@ class HumanVsAIGUI:
             start = time.time()
             move = self.ai_agent.select_move(self.board)
             spent = time.time() - start
-            self.ai_clock -= spent  
+            self.ai_clock -= spent
             if move is not None:
                 self.board.push(move)
                 print(f"AI played: {move.uci()}")

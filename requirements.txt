@@ -1,6 +1,16 @@
+# Generate requirements.txt for the final game
+requirements = """
+torch>=2.0
+torchvision
+torchaudio
+pygame
+python-chess
 numpy
 matplotlib
-psutil
-python-chess
-torch
-torchvision
+tqdm
+"""
+
+requirements_path = Path("/mnt/data/requirements_ai_chess.txt")
+requirements_path.write_text(requirements.strip())
+
+requirements_path.name

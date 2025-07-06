@@ -54,6 +54,9 @@ from matplotlib.widgets import Button
 # Set the number of threads for PyTorch to the maximum number of physical cores
 torch.set_num_threads(os.cpu_count())
 
+# allows cuDNN (NVIDIA’s deep learning library) to profile different kernel implementations 
+# and select the fastest one for your hardware and batch size.
+torch.backends.cudnn.benchmark = True
 
 import tempfile
 import shutil
